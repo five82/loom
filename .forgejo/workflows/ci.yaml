@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: Check
+    runs-on: debian-13
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Checkout code
+        uses: https://data.forgejo.org/actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Set up Go
+        uses: https://data.forgejo.org/actions/setup-go@v7
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+          cache: true
+
+      - name: Run CI checks
+        run: ./check-ci.sh
