@@ -4,7 +4,6 @@ This file provides guidance when working with code in this repository.
 
 ## TL;DR
 
-- Do not run `git commit` or `git push` unless explicitly instructed.
 - Do not create git branches unless explicitly instructed.
 - Run `./check-ci.sh` before handing work back.
 
