@@ -319,8 +319,8 @@ func (a *API) writeImageError(w http.ResponseWriter, err error) {
 
 func imageKind(w http.ResponseWriter, r *http.Request) (string, bool) {
 	kind := r.PathValue("kind")
-	if kind != "poster" && kind != "backdrop" {
-		writeError(w, http.StatusBadRequest, "image kind must be poster or backdrop")
+	if kind != "poster" && kind != "backdrop" && kind != "logo" {
+		writeError(w, http.StatusBadRequest, "image kind must be poster, backdrop, or logo")
 		return "", false
 	}
 	return kind, true

@@ -119,14 +119,26 @@ func TestEpisodeInheritsShowImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	logoID, err := catalog.UpsertImage(ctx, Image{
+		ItemID: showID, Kind: "logo", Path: "/images/logo.png", SourceURL: "https://example/logo.png",
+		Provider: "tmdb", ProviderPath: "/logo.png", Tag: "logo-tag",
+		ContentType: "image/png", Width: 300, Height: 100, UpdatedAt: now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []int64{seasonID, episodeID} {
 		item, err := catalog.Item(ctx, id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if item.PosterImageID != posterID || item.PosterImageTag != "poster-tag" {
-			t.Fatalf("item %d image = %d/%q, want inherited %d/poster-tag", id,
+			t.Fatalf("item %d poster = %d/%q, want inherited %d/poster-tag", id,
 				item.PosterImageID, item.PosterImageTag, posterID)
+		}
+		if item.LogoImageID != logoID || item.LogoImageTag != "logo-tag" {
+			t.Fatalf("item %d logo = %d/%q, want inherited %d/logo-tag", id,
+				item.LogoImageID, item.LogoImageTag, logoID)
 		}
 	}
 }
@@ -138,6 +150,10 @@ func TestSchemaOneMigratesImageSelectionsAndMediaStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = db.Exec(`
+CREATE TABLE items (
+    id INTEGER PRIMARY KEY
+);
+INSERT INTO items(id) VALUES (3);
 CREATE TABLE images (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL,
@@ -201,11 +217,18 @@ FROM media_files JOIN media_streams ON media_streams.media_file_id = media_files
 WHERE media_files.id = 4`).Scan(&mtime, &profile, &channelLayout, &dynamicRange); err != nil {
 		t.Fatal(err)
 	}
-	if version != 3 || provider != "tmdb" || tag != "legacy-7" || manuallySelected ||
+	if version != 4 || provider != "tmdb" || tag != "legacy-7" || manuallySelected ||
 		mtime != -1 || profile != "" || channelLayout != "" || dynamicRange != "" {
 		t.Fatalf("migration result = version %d, provider %q, tag %q, manual %v, "+
 			"mtime %d, profile %q, layout %q, range %q", version, provider, tag,
 			manuallySelected, mtime, profile, channelLayout, dynamicRange)
+	}
+	if _, err := catalog.UpsertImage(context.Background(), Image{
+		ItemID: 3, Kind: "logo", Path: "/logo.png", SourceURL: "https://example/logo.png",
+		Provider: "tmdb", ProviderPath: "/logo.png", Tag: "logo-tag",
+		ContentType: "image/png", Width: 300, Height: 100, UpdatedAt: now(),
+	}); err != nil {
+		t.Fatalf("store logo after migration: %v", err)
 	}
 }
 

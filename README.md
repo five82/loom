@@ -62,7 +62,7 @@ Runtime data is kept under `paths.state_dir`:
 ```text
 loom.db             SQLite catalog and playback state
 daemon.log          structured daemon log
-images/             selected TMDB poster and backdrop originals
+images/             selected TMDB poster, backdrop, and logo originals
 ```
 
 The local control socket and daemon lock use `$XDG_RUNTIME_DIR`, with `/tmp` as
@@ -102,12 +102,13 @@ loom search tv "Batman"
 loom match ITEM_ID TMDB_ID
 ```
 
-A match stores provider metadata in SQLite and downloads the default poster and
-backdrop into Loom's state directory. TV matches also populate metadata for
-local `SxxEyy` episodes. Clients can browse TMDB poster and backdrop options,
-select another image, or reset the selection to TMDB's default. Manual choices
-survive metadata refreshes and are reset only when the item is matched to a
-different TMDB title. Loom never writes artwork into the media libraries.
+A match stores provider metadata in SQLite and downloads the default poster,
+backdrop, and TMDB's preferred logo into Loom's state directory when they are
+available. TV matches also populate metadata for local `SxxEyy` episodes.
+Clients can browse TMDB poster, backdrop, and logo options, select another
+image, or reset the selection to TMDB's default or preferred option. Manual
+choices survive metadata refreshes and are reset only when the item is matched
+to a different TMDB title. Loom never writes artwork into the media libraries.
 
 ## Library conventions
 
@@ -154,9 +155,9 @@ GET  /api/v1/items?library=movies
 GET  /api/v1/items/{id}
 GET  /api/v1/items/{id}/children
 GET  /api/v1/items/{id}/playback
-GET  /api/v1/items/{id}/images/{poster|backdrop}/options
-PUT  /api/v1/items/{id}/images/{poster|backdrop}
-POST /api/v1/items/{id}/images/{poster|backdrop}/reset
+GET  /api/v1/items/{id}/images/{poster|backdrop|logo}/options
+PUT  /api/v1/items/{id}/images/{poster|backdrop|logo}
+POST /api/v1/items/{id}/images/{poster|backdrop|logo}/reset
 GET  /api/v1/media/{media-id}
 GET  /api/v1/images/{image-id}?tag={image-tag}
 PUT  /api/v1/items/{id}/progress
@@ -176,9 +177,9 @@ Select one of the provider paths returned by the image-options endpoint:
 }
 ```
 
-Items expose poster and backdrop image IDs with content tags. Clients should
-include the tag query parameter when fetching an image; tagged responses are
-immutable and a changed selection produces a new tag. Seasons and episodes
+Items expose poster, backdrop, and logo image IDs with content tags. Clients
+should include the tag query parameter when fetching an image; tagged responses
+are immutable and a changed selection produces a new tag. Seasons and episodes
 inherit their show's images unless they receive their own image support later.
 Image selection is unauthenticated under Loom's trusted-LAN model.
 

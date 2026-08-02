@@ -108,11 +108,13 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	if identityChanged {
 		// Never carry a manual selection across two different titles. Clearing
 		// first also lets a later refresh retry if the new download fails.
-		s.clearImage(ctx, itemID, "poster")
-		s.clearImage(ctx, itemID, "backdrop")
+		for _, kind := range []string{"poster", "backdrop", "logo"} {
+			s.clearImage(ctx, itemID, kind)
+		}
 	}
 	s.saveDefaultImage(ctx, itemID, "poster", details.PosterPath)
 	s.saveDefaultImage(ctx, itemID, "backdrop", details.BackdropPath)
+	s.saveDefaultLogo(ctx, itemID, mediaType, tmdbID)
 	if item.Kind == "show" {
 		s.updateEpisodes(ctx, itemID, tmdbID)
 	}
@@ -142,12 +144,7 @@ func (s *Service) ImageOptions(ctx context.Context, itemID int64, kind string) (
 	if err != nil {
 		return nil, err
 	}
-	candidates := images.Posters
-	thumbnailSize := "w342"
-	if kind == "backdrop" {
-		candidates = images.Backdrops
-		thumbnailSize = "w780"
-	}
+	candidates, thumbnailSize := imageCandidates(images, kind)
 	current, err := s.store.ItemImage(ctx, itemID, kind)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
@@ -193,13 +190,24 @@ func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*s
 	if err != nil {
 		return nil, err
 	}
-	details, err := s.tmdb.Details(ctx, metadataType(item.Kind), item.TMDBID)
-	if err != nil {
-		return nil, err
-	}
-	providerPath := details.PosterPath
-	if kind == "backdrop" {
-		providerPath = details.BackdropPath
+	providerPath := ""
+	if kind == "logo" {
+		images, err := s.tmdb.Images(ctx, metadataType(item.Kind), item.TMDBID)
+		if err != nil {
+			return nil, err
+		}
+		if len(images.Logos) > 0 {
+			providerPath = images.Logos[0].FilePath
+		}
+	} else {
+		details, err := s.tmdb.Details(ctx, metadataType(item.Kind), item.TMDBID)
+		if err != nil {
+			return nil, err
+		}
+		providerPath = details.PosterPath
+		if kind == "backdrop" {
+			providerPath = details.BackdropPath
+		}
 	}
 	if providerPath == "" {
 		return nil, fmt.Errorf("%w: TMDB has no default %s for item %d", ErrImageUnavailable, kind, itemID)
@@ -213,7 +221,7 @@ func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*s
 }
 
 func (s *Service) imageItem(ctx context.Context, itemID int64, kind string) (*store.Item, error) {
-	if kind != "poster" && kind != "backdrop" {
+	if kind != "poster" && kind != "backdrop" && kind != "logo" {
 		return nil, fmt.Errorf("%w: unsupported image kind %q", ErrImageUnavailable, kind)
 	}
 	item, err := s.store.Item(ctx, itemID)
@@ -235,6 +243,28 @@ func (s *Service) saveDefaultImage(ctx context.Context, itemID int64, kind, prov
 	}
 	if _, err := s.downloadProviderImage(ctx, itemID, kind, providerPath, false, false); err != nil {
 		s.logger.Warn("metadata image not saved", "item_id", itemID, "kind", kind, "error", err)
+	}
+}
+
+func (s *Service) saveDefaultLogo(ctx context.Context, itemID int64, mediaType string, tmdbID int64) {
+	images, err := s.tmdb.Images(ctx, mediaType, tmdbID)
+	if err != nil {
+		s.logger.Warn("TMDB logo metadata unavailable", "item_id", itemID, "error", err)
+		return
+	}
+	if len(images.Logos) > 0 {
+		s.saveDefaultImage(ctx, itemID, "logo", images.Logos[0].FilePath)
+	}
+}
+
+func imageCandidates(images tmdb.Images, kind string) ([]tmdb.ImageCandidate, string) {
+	switch kind {
+	case "backdrop":
+		return images.Backdrops, "w780"
+	case "logo":
+		return images.Logos, "w300"
+	default:
+		return images.Posters, "w342"
 	}
 }
 

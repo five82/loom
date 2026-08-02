@@ -173,6 +173,7 @@ type ImageCandidate struct {
 type Images struct {
 	Posters   []ImageCandidate
 	Backdrops []ImageCandidate
+	Logos     []ImageCandidate
 }
 
 func (c *Client) Images(ctx context.Context, mediaType string, id int64) (Images, error) {
@@ -190,12 +191,15 @@ func (c *Client) Images(ctx context.Context, mediaType string, id int64) (Images
 	var response struct {
 		Posters   []ImageCandidate `json:"posters"`
 		Backdrops []ImageCandidate `json:"backdrops"`
+		Logos     []ImageCandidate `json:"logos"`
 	}
 	path := "/" + mediaType + "/" + strconv.FormatInt(id, 10) + "/images"
 	if err := c.get(ctx, path, values, &response); err != nil {
 		return Images{}, err
 	}
-	return Images{Posters: response.Posters, Backdrops: response.Backdrops}, nil
+	return Images{
+		Posters: response.Posters, Backdrops: response.Backdrops, Logos: response.Logos,
+	}, nil
 }
 
 func (c *Client) ImageURL(path string) string {

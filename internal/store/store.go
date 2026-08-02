@@ -54,11 +54,8 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version > 3 {
-		return fmt.Errorf("database schema version %d is newer than supported version 3", version)
-	}
-	if version == 3 {
-		return nil
+	if version > 4 {
+		return fmt.Errorf("database schema version %d is newer than supported version 4", version)
 	}
 	if version == 1 {
 		if err := s.migrateImagesV2(); err != nil {
@@ -67,7 +64,16 @@ func (s *Store) migrate() error {
 		version = 2
 	}
 	if version == 2 {
-		return s.migrateMediaStreamsV3()
+		if err := s.migrateMediaStreamsV3(); err != nil {
+			return err
+		}
+		version = 3
+	}
+	if version == 3 {
+		return s.migrateLogoImagesV4()
+	}
+	if version == 4 {
+		return nil
 	}
 	const schema = `
 CREATE TABLE libraries (
@@ -142,7 +148,7 @@ CREATE TABLE media_streams (
 CREATE TABLE images (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop')),
+    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop', 'logo')),
     path TEXT NOT NULL UNIQUE,
     source_url TEXT NOT NULL,
     provider TEXT NOT NULL DEFAULT 'tmdb',
@@ -162,7 +168,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -224,6 +230,46 @@ PRAGMA user_version = 3;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit media stream migration: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateLogoImagesV4() error {
+	const migration = `
+CREATE TABLE images_v4 (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop', 'logo')),
+    path TEXT NOT NULL UNIQUE,
+    source_url TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'tmdb',
+    provider_path TEXT NOT NULL DEFAULT '',
+    tag TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    manually_selected INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    UNIQUE (item_id, kind)
+);
+INSERT INTO images_v4
+SELECT id, item_id, kind, path, source_url, provider, provider_path, tag,
+    content_type, width, height, manually_selected, updated_at
+FROM images;
+DROP TABLE images;
+ALTER TABLE images_v4 RENAME TO images;
+PRAGMA user_version = 4;
+`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin logo image migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(migration); err != nil {
+		return fmt.Errorf("migrate logo images to schema version 4: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit logo image migration: %w", err)
 	}
 	return nil
 }
@@ -505,6 +551,8 @@ type Item struct {
 	PosterImageTag   string     `json:"poster_image_tag,omitempty"`
 	BackdropImageID  int64      `json:"backdrop_image_id,omitempty"`
 	BackdropImageTag string     `json:"backdrop_image_tag,omitempty"`
+	LogoImageID      int64      `json:"logo_image_id,omitempty"`
+	LogoImageTag     string     `json:"logo_image_tag,omitempty"`
 	AddedAt          string     `json:"added_at"`
 	UpdatedAt        string     `json:"updated_at"`
 	Media            *MediaFile `json:"media,omitempty"`
@@ -533,6 +581,16 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
         (SELECT tag FROM images WHERE item_id = CASE
             WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
             WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'backdrop'), ''),
+    COALESCE(
+        (SELECT id FROM images WHERE item_id = i.id AND kind = 'logo'),
+        (SELECT id FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'logo'), 0),
+    COALESCE(
+        (SELECT tag FROM images WHERE item_id = i.id AND kind = 'logo'),
+        (SELECT tag FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'logo'), ''),
     i.added_at, i.updated_at`
 
 type ListOptions struct {
@@ -597,7 +655,8 @@ func scanItem(row rowScanner) (Item, error) {
 	if err := row.Scan(&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title, &item.Year,
 		&item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber, &item.TMDBID,
 		&item.Overview, &item.ReleaseDate, &item.PosterImageID, &item.PosterImageTag,
-		&item.BackdropImageID, &item.BackdropImageTag, &item.AddedAt, &item.UpdatedAt); err != nil {
+		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
+		&item.LogoImageTag, &item.AddedAt, &item.UpdatedAt); err != nil {
 		return Item{}, fmt.Errorf("scan item: %w", err)
 	}
 	if parent.Valid {
@@ -793,7 +852,8 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 			&item.Year, &item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber,
 			&item.TMDBID, &item.Overview, &item.ReleaseDate, &item.PosterImageID,
 			&item.PosterImageTag, &item.BackdropImageID, &item.BackdropImageTag,
-			&item.AddedAt, &item.UpdatedAt, &position, &duration, &played, &updated); err != nil {
+			&item.LogoImageID, &item.LogoImageTag, &item.AddedAt, &item.UpdatedAt,
+			&position, &duration, &played, &updated); err != nil {
 			return nil, fmt.Errorf("scan continue-watching item: %w", err)
 		}
 		if parent.Valid {

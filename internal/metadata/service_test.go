@@ -23,6 +23,7 @@ import (
 func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	defaultImage := encodedPNG(t, color.RGBA{R: 255, A: 255})
 	alternateImage := encodedPNG(t, color.RGBA{B: 255, A: 255})
+	alternateLogo := encodedPNG(t, color.RGBA{G: 255, A: 255})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/search/movie", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"results":[{"id":329865,"title":"Arrival","release_date":"2016-11-10"}]}`)
@@ -34,14 +35,17 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"id":22,"title":"Different Movie"}`)
 	})
 	mux.HandleFunc("/movie/329865/images", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/poster.jpg","width":2,"height":3},{"file_path":"/alternate.jpg","width":2,"height":3}],"backdrops":[]}`)
+		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/poster.jpg","width":2,"height":3},{"file_path":"/alternate.jpg","width":2,"height":3}],"backdrops":[],"logos":[{"file_path":"/logo.png","width":3,"height":2},{"file_path":"/alternate-logo.png","width":3,"height":2}]}`)
 	})
 	mux.HandleFunc("/images/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/alternate.jpg") {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/alternate.jpg"):
 			_, _ = w.Write(alternateImage)
-			return
+		case strings.HasSuffix(r.URL.Path, "/alternate-logo.png"):
+			_, _ = w.Write(alternateLogo)
+		default:
+			_, _ = w.Write(defaultImage)
 		}
-		_, _ = w.Write(defaultImage)
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -73,7 +77,9 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.TMDBID != 329865 || item.Overview == "" || item.PosterImageID == 0 || item.BackdropImageID == 0 || item.PosterImageTag == "" {
+	if item.TMDBID != 329865 || item.Overview == "" || item.PosterImageID == 0 ||
+		item.BackdropImageID == 0 || item.LogoImageID == 0 || item.PosterImageTag == "" ||
+		item.LogoImageTag == "" {
 		t.Fatalf("metadata not applied: %+v", item)
 	}
 	poster, err := catalog.Image(ctx, item.PosterImageID)
@@ -85,6 +91,29 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 	if data, err := os.ReadFile(poster.Path); err != nil || !bytes.Equal(data, defaultImage) {
 		t.Fatalf("saved default image differs: %v", err)
+	}
+	logo, err := catalog.Image(ctx, item.LogoImageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logo.ManuallySelected || logo.ProviderPath != "/logo.png" || logo.Width != 2 || logo.Height != 3 {
+		t.Fatalf("default logo = %+v", logo)
+	}
+	logoOptions, err := service.ImageOptions(ctx, itemID, "logo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logoOptions) != 2 || !logoOptions[0].Selected ||
+		!strings.Contains(logoOptions[1].ThumbnailURL, "/w300/") {
+		t.Fatalf("logo options = %+v", logoOptions)
+	}
+	selectedLogo, err := service.SelectImage(ctx, itemID, "logo", "tmdb", "/alternate-logo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selectedLogo.ManuallySelected || selectedLogo.ProviderPath != "/alternate-logo.png" ||
+		selectedLogo.Tag == logo.Tag {
+		t.Fatalf("selected logo = %+v", selectedLogo)
 	}
 
 	options, err := service.ImageOptions(ctx, itemID, "poster")
@@ -112,6 +141,13 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	if preserved.ProviderPath != "/alternate.jpg" || !preserved.ManuallySelected {
 		t.Fatalf("manual poster was not preserved: %+v", preserved)
 	}
+	preservedLogo, err := catalog.ItemImage(ctx, itemID, "logo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preservedLogo.ProviderPath != "/alternate-logo.png" || !preservedLogo.ManuallySelected {
+		t.Fatalf("manual logo was not preserved: %+v", preservedLogo)
+	}
 
 	reset, err := service.ResetImage(ctx, itemID, "poster")
 	if err != nil {
@@ -119,6 +155,13 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 	if reset.ManuallySelected || reset.ProviderPath != "/poster.jpg" || reset.Tag != poster.Tag {
 		t.Fatalf("reset poster = %+v", reset)
+	}
+	resetLogo, err := service.ResetImage(ctx, itemID, "logo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resetLogo.ManuallySelected || resetLogo.ProviderPath != "/logo.png" || resetLogo.Tag != logo.Tag {
+		t.Fatalf("reset logo = %+v", resetLogo)
 	}
 
 	if _, err := service.SelectImage(ctx, itemID, "poster", "tmdb", "/alternate.jpg"); err != nil {
@@ -129,6 +172,9 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 	if _, err := catalog.ItemImage(ctx, itemID, "poster"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("poster survived identity change: %v", err)
+	}
+	if _, err := catalog.ItemImage(ctx, itemID, "logo"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("logo survived identity change: %v", err)
 	}
 }
 

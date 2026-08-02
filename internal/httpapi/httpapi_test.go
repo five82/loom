@@ -107,10 +107,10 @@ func TestImageSelectionAPI(t *testing.T) {
 	imageBytes := testPNG(t)
 	provider := http.NewServeMux()
 	provider.HandleFunc("/movie/10", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie","poster_path":"/selected.jpg"}`)
+		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie"}`)
 	})
 	provider.HandleFunc("/movie/10/images", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/selected.jpg","width":2,"height":3}],"backdrops":[]}`)
+		_, _ = fmt.Fprint(w, `{"posters":[],"backdrops":[],"logos":[{"file_path":"/selected.png","width":2,"height":3}]}`)
 	})
 	provider.HandleFunc("/images/", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(imageBytes)
@@ -123,7 +123,7 @@ func TestImageSelectionAPI(t *testing.T) {
 	api := New(catalog, library.NewManager(nil, 0, slog.Default()), metadataService, make(chan struct{}, 1))
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
-	baseURL := server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10) + "/images/poster"
+	baseURL := server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10) + "/images/logo"
 
 	response, err := http.Get(baseURL + "/options")
 	if err != nil {
@@ -141,7 +141,7 @@ func TestImageSelectionAPI(t *testing.T) {
 	}
 
 	request, err := http.NewRequest(http.MethodPut, baseURL,
-		bytes.NewBufferString(`{"provider":"tmdb","provider_path":"/selected.jpg"}`))
+		bytes.NewBufferString(`{"provider":"tmdb","provider_path":"/selected.png"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,8 @@ func TestImageSelectionAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK || !selected.ManuallySelected || selected.Tag == "" {
+	if response.StatusCode != http.StatusOK || selected.Kind != "logo" ||
+		selected.ProviderPath != "/selected.png" || !selected.ManuallySelected || selected.Tag == "" {
 		t.Fatalf("selected image status=%d image=%+v", response.StatusCode, selected)
 	}
 
@@ -171,7 +172,7 @@ func TestImageSelectionAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK || reset.ManuallySelected {
+	if response.StatusCode != http.StatusOK || reset.Kind != "logo" || reset.ManuallySelected {
 		t.Fatalf("reset image status=%d image=%+v", response.StatusCode, reset)
 	}
 }
