@@ -54,11 +54,14 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version > 1 {
-		return fmt.Errorf("database schema version %d is newer than supported version 1", version)
+	if version > 2 {
+		return fmt.Errorf("database schema version %d is newer than supported version 2", version)
+	}
+	if version == 2 {
+		return nil
 	}
 	if version == 1 {
-		return nil
+		return s.migrateImagesV2()
 	}
 	const schema = `
 CREATE TABLE libraries (
@@ -133,6 +136,14 @@ CREATE TABLE images (
     kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop')),
     path TEXT NOT NULL UNIQUE,
     source_url TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'tmdb',
+    provider_path TEXT NOT NULL DEFAULT '',
+    tag TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    manually_selected INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
     UNIQUE (item_id, kind)
 );
 CREATE TABLE playback_state (
@@ -142,7 +153,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -154,6 +165,33 @@ PRAGMA user_version = 1;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit database schema: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateImagesV2() error {
+	const migration = `
+ALTER TABLE images ADD COLUMN provider TEXT NOT NULL DEFAULT 'tmdb';
+ALTER TABLE images ADD COLUMN provider_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE images ADD COLUMN tag TEXT NOT NULL DEFAULT '';
+ALTER TABLE images ADD COLUMN content_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE images ADD COLUMN width INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE images ADD COLUMN height INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE images ADD COLUMN manually_selected INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE images ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+UPDATE images SET tag = printf('legacy-%d', id), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+PRAGMA user_version = 2;
+`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin image migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(migration); err != nil {
+		return fmt.Errorf("migrate images to schema version 2: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit image migration: %w", err)
 	}
 	return nil
 }
@@ -428,12 +466,38 @@ type Item struct {
 	Overview         string     `json:"overview,omitempty"`
 	ReleaseDate      string     `json:"release_date,omitempty"`
 	PosterImageID    int64      `json:"poster_image_id,omitempty"`
+	PosterImageTag   string     `json:"poster_image_tag,omitempty"`
 	BackdropImageID  int64      `json:"backdrop_image_id,omitempty"`
+	BackdropImageTag string     `json:"backdrop_image_tag,omitempty"`
 	AddedAt          string     `json:"added_at"`
 	UpdatedAt        string     `json:"updated_at"`
 	Media            *MediaFile `json:"media,omitempty"`
 	Progress         *Progress  `json:"progress,omitempty"`
 }
+
+const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
+    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
+    COALESCE(
+        (SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'),
+        (SELECT id FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'poster'), 0),
+    COALESCE(
+        (SELECT tag FROM images WHERE item_id = i.id AND kind = 'poster'),
+        (SELECT tag FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'poster'), ''),
+    COALESCE(
+        (SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'),
+        (SELECT id FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'backdrop'), 0),
+    COALESCE(
+        (SELECT tag FROM images WHERE item_id = i.id AND kind = 'backdrop'),
+        (SELECT tag FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'backdrop'), ''),
+    i.added_at, i.updated_at`
 
 type ListOptions struct {
 	LibraryKind string
@@ -465,12 +529,7 @@ func (s *Store) ListItems(ctx context.Context, opts ListOptions) ([]Item, error)
 		args = append(args, opts.Kind)
 	}
 	args = append(args, opts.Limit, opts.Offset)
-	query := `
-SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
-    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
-    i.added_at, i.updated_at
+	query := `SELECT ` + itemColumns + `
 FROM items i JOIN libraries l ON l.id = i.library_id
 WHERE ` + strings.Join(clauses, " AND ") + `
 ORDER BY CASE i.kind WHEN 'season' THEN i.season_number WHEN 'episode' THEN i.episode_number ELSE 0 END,
@@ -501,8 +560,8 @@ func scanItem(row rowScanner) (Item, error) {
 	var parent sql.NullInt64
 	if err := row.Scan(&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title, &item.Year,
 		&item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber, &item.TMDBID,
-		&item.Overview, &item.ReleaseDate, &item.PosterImageID, &item.BackdropImageID,
-		&item.AddedAt, &item.UpdatedAt); err != nil {
+		&item.Overview, &item.ReleaseDate, &item.PosterImageID, &item.PosterImageTag,
+		&item.BackdropImageID, &item.BackdropImageTag, &item.AddedAt, &item.UpdatedAt); err != nil {
 		return Item{}, fmt.Errorf("scan item: %w", err)
 	}
 	if parent.Valid {
@@ -512,12 +571,7 @@ func scanItem(row rowScanner) (Item, error) {
 }
 
 func (s *Store) Item(ctx context.Context, id int64) (*Item, error) {
-	row := s.db.QueryRowContext(ctx, `
-SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
-    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
-    i.added_at, i.updated_at
+	row := s.db.QueryRowContext(ctx, `SELECT `+itemColumns+`
 FROM items i WHERE i.id = ? AND i.available = 1`, id)
 	item, err := scanItem(row)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(errors.Unwrap(err), sql.ErrNoRows) {
@@ -679,12 +733,8 @@ func (s *Store) ContinueWatching(ctx context.Context, limit int) ([]Item, error)
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx, `
-SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
-    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
-    i.added_at, i.updated_at, p.position_ms, p.duration_ms, p.played, p.updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`,
+    p.position_ms, p.duration_ms, p.played, p.updated_at
 FROM playback_state p JOIN items i ON i.id = p.item_id
 WHERE i.available = 1 AND p.played = 0 AND p.duration_ms >= 300000
     AND CAST(p.position_ms AS REAL) / p.duration_ms >= 0.05
@@ -704,8 +754,8 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 		if err := rows.Scan(&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title,
 			&item.Year, &item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber,
 			&item.TMDBID, &item.Overview, &item.ReleaseDate, &item.PosterImageID,
-			&item.BackdropImageID, &item.AddedAt, &item.UpdatedAt, &position, &duration,
-			&played, &updated); err != nil {
+			&item.PosterImageTag, &item.BackdropImageID, &item.BackdropImageTag,
+			&item.AddedAt, &item.UpdatedAt, &position, &duration, &played, &updated); err != nil {
 			return nil, fmt.Errorf("scan continue-watching item: %w", err)
 		}
 		if parent.Valid {
@@ -721,12 +771,7 @@ func (s *Store) RecentlyAdded(ctx context.Context, limit int) ([]Item, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx, `
-SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
-    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
-    i.added_at, i.updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`
 FROM items i WHERE i.available = 1 AND i.kind IN ('movie', 'episode', 'unmatched')
 ORDER BY i.added_at DESC, i.id DESC LIMIT ?`, limit)
 	if err != nil {

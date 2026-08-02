@@ -36,6 +36,9 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	api.public.HandleFunc("GET /api/v1/items/{id}/children", api.children)
 	api.public.HandleFunc("GET /api/v1/items/{id}/playback", api.playback)
 	api.public.HandleFunc("PUT /api/v1/items/{id}/progress", api.saveProgress)
+	api.public.HandleFunc("GET /api/v1/items/{id}/images/{kind}/options", api.imageOptions)
+	api.public.HandleFunc("PUT /api/v1/items/{id}/images/{kind}", api.selectImage)
+	api.public.HandleFunc("POST /api/v1/items/{id}/images/{kind}/reset", api.resetImage)
 	api.public.HandleFunc("GET /api/v1/media/{id}", api.media)
 	api.public.HandleFunc("GET /api/v1/images/{id}", api.image)
 	api.public.HandleFunc("GET /api/v1/continue-watching", api.continueWatching)
@@ -228,6 +231,101 @@ func (a *API) media(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, filepath.Base(media.Path), info.ModTime(), file)
 }
 
+func (a *API) imageOptions(w http.ResponseWriter, r *http.Request) {
+	if a.metadata == nil {
+		writeError(w, http.StatusServiceUnavailable, "TMDB metadata is disabled")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	kind, ok := imageKind(w, r)
+	if !ok {
+		return
+	}
+	options, err := a.metadata.ImageOptions(r.Context(), id, kind)
+	if err != nil {
+		a.writeImageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": options})
+}
+
+func (a *API) selectImage(w http.ResponseWriter, r *http.Request) {
+	if a.metadata == nil {
+		writeError(w, http.StatusServiceUnavailable, "TMDB metadata is disabled")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	kind, ok := imageKind(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Provider     string `json:"provider"`
+		ProviderPath string `json:"provider_path"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid image selection: "+err.Error())
+		return
+	}
+	image, err := a.metadata.SelectImage(r.Context(), id, kind, request.Provider, request.ProviderPath)
+	if err != nil {
+		a.writeImageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, image)
+}
+
+func (a *API) resetImage(w http.ResponseWriter, r *http.Request) {
+	if a.metadata == nil {
+		writeError(w, http.StatusServiceUnavailable, "TMDB metadata is disabled")
+		return
+	}
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	kind, ok := imageKind(w, r)
+	if !ok {
+		return
+	}
+	image, err := a.metadata.ResetImage(r.Context(), id, kind)
+	if err != nil {
+		a.writeImageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, image)
+}
+
+func (a *API) writeImageError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "item not found")
+	case errors.Is(err, metadata.ErrImageOptionNotFound):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, metadata.ErrImageUnavailable):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		writeError(w, http.StatusBadGateway, err.Error())
+	}
+}
+
+func imageKind(w http.ResponseWriter, r *http.Request) (string, bool) {
+	kind := r.PathValue("kind")
+	if kind != "poster" && kind != "backdrop" {
+		writeError(w, http.StatusBadRequest, "image kind must be poster or backdrop")
+		return "", false
+	}
+	return kind, true
+}
+
 func (a *API) image(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
@@ -253,8 +351,25 @@ func (a *API) image(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "image file is unavailable")
 		return
 	}
-	if contentType := mime.TypeByExtension(filepath.Ext(image.Path)); contentType != "" {
+	requestedTag := r.URL.Query().Get("tag")
+	if requestedTag != "" && requestedTag != image.Tag {
+		writeError(w, http.StatusNotFound, "image version not found")
+		return
+	}
+	contentType := image.ContentType
+	if contentType == "" {
+		contentType = mime.TypeByExtension(filepath.Ext(image.Path))
+	}
+	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
+	}
+	if image.Tag != "" {
+		w.Header().Set("ETag", strconv.Quote(image.Tag))
+	}
+	if requestedTag == image.Tag && image.Tag != "" {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeContent(w, r, filepath.Base(image.Path), info.ModTime(), file)

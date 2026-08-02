@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,10 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/five82/loom/internal/library"
+	"github.com/five82/loom/internal/metadata"
 	"github.com/five82/loom/internal/store"
+	"github.com/five82/loom/internal/tmdb"
 )
 
 func TestMediaRangeAndProgress(t *testing.T) {
@@ -60,6 +68,175 @@ func TestMediaRangeAndProgress(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !progress.Played {
 		t.Fatalf("progress response status=%d progress=%+v", response.StatusCode, progress)
 	}
+}
+
+func TestImageSelectionAPI(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	if err := catalog.UpdateMetadata(context.Background(), itemID, store.MetadataUpdate{
+		TMDBID: 10, Title: "Movie",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	imageBytes := testPNG(t)
+	provider := http.NewServeMux()
+	provider.HandleFunc("/movie/10", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie","poster_path":"/selected.jpg"}`)
+	})
+	provider.HandleFunc("/movie/10/images", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/selected.jpg","width":2,"height":3}],"backdrops":[]}`)
+	})
+	provider.HandleFunc("/images/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(imageBytes)
+	})
+	providerServer := httptest.NewServer(provider)
+	defer providerServer.Close()
+	client := tmdb.NewWithURLs("key", "en-US", providerServer.URL,
+		providerServer.URL+"/images", providerServer.Client())
+	metadataService := metadata.New(catalog, client, filepath.Join(t.TempDir(), "images"), slog.Default())
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), metadataService, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+	baseURL := server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10) + "/images/poster"
+
+	response, err := http.Get(baseURL + "/options")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var options struct {
+		Items []metadata.ImageOption `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&options); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(options.Items) != 1 || options.Items[0].Selected {
+		t.Fatalf("image options status=%d options=%+v", response.StatusCode, options.Items)
+	}
+
+	request, err := http.NewRequest(http.MethodPut, baseURL,
+		bytes.NewBufferString(`{"provider":"tmdb","provider_path":"/selected.jpg"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected store.Image
+	if err := json.NewDecoder(response.Body).Decode(&selected); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || !selected.ManuallySelected || selected.Tag == "" {
+		t.Fatalf("selected image status=%d image=%+v", response.StatusCode, selected)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, baseURL+"/reset", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reset store.Image
+	if err := json.NewDecoder(response.Body).Decode(&reset); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || reset.ManuallySelected {
+		t.Fatalf("reset image status=%d image=%+v", response.StatusCode, reset)
+	}
+}
+
+func TestImageTagCaching(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	contents := []byte("image contents")
+	path := filepath.Join(t.TempDir(), "poster.jpg")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imageID, err := catalog.UpsertImage(context.Background(), store.Image{
+		ItemID: itemID, Kind: "poster", Path: path, SourceURL: "https://example/poster.jpg",
+		Provider: "tmdb", ProviderPath: "/poster.jpg", Tag: "content-tag",
+		ContentType: "image/jpeg", Width: 200, Height: 300,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+	imageURL := server.URL + "/api/v1/images/" + strconv.FormatInt(imageID, 10)
+
+	response, err := http.Get(imageURL + "?tag=content-tag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Equal(body, contents) ||
+		response.Header.Get("ETag") != `"content-tag"` ||
+		!strings.Contains(response.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("image response status=%d headers=%v body=%q", response.StatusCode, response.Header, body)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, imageURL+"?tag=content-tag", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("If-None-Match", `"content-tag"`)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotModified {
+		t.Fatalf("conditional image status = %d", response.StatusCode)
+	}
+
+	response, err = http.Get(imageURL + "?tag=old-tag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("stale image tag status = %d", response.StatusCode)
+	}
+
+	response, err = http.Get(server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var item store.Item
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		t.Fatal(err)
+	}
+	if item.PosterImageID != imageID || item.PosterImageTag != "content-tag" {
+		t.Fatalf("item image reference = %d/%q", item.PosterImageID, item.PosterImageTag)
+	}
+}
+
+func testPNG(t *testing.T) []byte {
+	t.Helper()
+	picture := image.NewRGBA(image.Rect(0, 0, 2, 3))
+	for y := range 3 {
+		for x := range 2 {
+			picture.Set(x, y, color.RGBA{R: 255, A: 255})
+		}
+	}
+	var output bytes.Buffer
+	if err := png.Encode(&output, picture); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
 }
 
 func testCatalog(t *testing.T) (*store.Store, int64, int64, []byte) {

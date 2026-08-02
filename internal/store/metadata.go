@@ -36,12 +36,7 @@ WHERE id = ? AND available = 1`, metadata.TMDBID, metadata.Title, metadata.Title
 }
 
 func (s *Store) EpisodesForShow(ctx context.Context, showID int64) ([]Item, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
-    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
-    i.added_at, i.updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`
 FROM items i JOIN items season ON season.id = i.parent_id
 WHERE season.parent_id = ? AND i.available = 1 AND i.kind = 'episode'
 ORDER BY i.season_number, i.episode_number`, showID)
@@ -61,12 +56,7 @@ ORDER BY i.season_number, i.episode_number`, showID)
 }
 
 func (s *Store) UnmatchedItems(ctx context.Context) ([]Item, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
-    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
-    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
-    i.added_at, i.updated_at
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`
 FROM items i
 WHERE i.available = 1 AND (i.kind = 'unmatched' OR (i.kind IN ('movie', 'show') AND i.tmdb_id = 0))
 ORDER BY i.kind, i.title COLLATE NOCASE`)
@@ -86,37 +76,80 @@ ORDER BY i.kind, i.title COLLATE NOCASE`)
 }
 
 type Image struct {
-	ID        int64  `json:"id"`
-	ItemID    int64  `json:"item_id"`
-	Kind      string `json:"kind"`
-	Path      string `json:"-"`
-	SourceURL string `json:"source_url,omitempty"`
+	ID               int64  `json:"id"`
+	ItemID           int64  `json:"item_id"`
+	Kind             string `json:"kind"`
+	Path             string `json:"-"`
+	SourceURL        string `json:"-"`
+	Provider         string `json:"provider"`
+	ProviderPath     string `json:"provider_path,omitempty"`
+	Tag              string `json:"tag"`
+	ContentType      string `json:"content_type,omitempty"`
+	Width            int    `json:"width,omitempty"`
+	Height           int    `json:"height,omitempty"`
+	ManuallySelected bool   `json:"manually_selected"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 func (s *Store) UpsertImage(ctx context.Context, image Image) (int64, error) {
 	var id int64
 	err := s.db.QueryRowContext(ctx, `
-INSERT INTO images(item_id, kind, path, source_url) VALUES (?, ?, ?, ?)
-ON CONFLICT(item_id, kind) DO UPDATE SET path = excluded.path, source_url = excluded.source_url
-RETURNING id`, image.ItemID, image.Kind, image.Path, image.SourceURL).Scan(&id)
+INSERT INTO images(item_id, kind, path, source_url, provider, provider_path, tag,
+    content_type, width, height, manually_selected, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(item_id, kind) DO UPDATE SET path = excluded.path, source_url = excluded.source_url,
+    provider = excluded.provider, provider_path = excluded.provider_path, tag = excluded.tag,
+    content_type = excluded.content_type, width = excluded.width, height = excluded.height,
+    manually_selected = excluded.manually_selected, updated_at = excluded.updated_at
+RETURNING id`, image.ItemID, image.Kind, image.Path, image.SourceURL, image.Provider,
+		image.ProviderPath, image.Tag, image.ContentType, image.Width, image.Height,
+		image.ManuallySelected, image.UpdatedAt).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert %s image: %w", image.Kind, err)
 	}
 	return id, nil
 }
 
-func (s *Store) Image(ctx context.Context, id int64) (*Image, error) {
+const imageColumns = `images.id, images.item_id, images.kind, images.path, images.source_url,
+    images.provider, images.provider_path, images.tag, images.content_type, images.width,
+    images.height, images.manually_selected, images.updated_at`
+
+func scanImage(row rowScanner) (*Image, error) {
 	var image Image
-	err := s.db.QueryRowContext(ctx, `
-SELECT images.id, images.item_id, images.kind, images.path, images.source_url
-FROM images JOIN items ON items.id = images.item_id
-WHERE images.id = ? AND items.available = 1`, id).
-		Scan(&image.ID, &image.ItemID, &image.Kind, &image.Path, &image.SourceURL)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get image: %w", err)
+	if err := row.Scan(&image.ID, &image.ItemID, &image.Kind, &image.Path, &image.SourceURL,
+		&image.Provider, &image.ProviderPath, &image.Tag, &image.ContentType, &image.Width,
+		&image.Height, &image.ManuallySelected, &image.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scan image: %w", err)
 	}
 	return &image, nil
+}
+
+func (s *Store) Image(ctx context.Context, id int64) (*Image, error) {
+	return scanImage(s.db.QueryRowContext(ctx, `SELECT `+imageColumns+`
+FROM images JOIN items ON items.id = images.item_id
+WHERE images.id = ? AND items.available = 1`, id))
+}
+
+func (s *Store) ItemImage(ctx context.Context, itemID int64, kind string) (*Image, error) {
+	return scanImage(s.db.QueryRowContext(ctx, `SELECT `+imageColumns+`
+FROM images JOIN items ON items.id = images.item_id
+WHERE images.item_id = ? AND images.kind = ? AND items.available = 1`, itemID, kind))
+}
+
+func (s *Store) DeleteItemImage(ctx context.Context, itemID int64, kind string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM images WHERE item_id = ? AND kind = ?`, itemID, kind)
+	if err != nil {
+		return fmt.Errorf("delete %s image: %w", kind, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read deleted image count: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

@@ -14,7 +14,7 @@ import (
 
 const (
 	DefaultBaseURL  = "https://api.themoviedb.org/3"
-	DefaultImageURL = "https://image.tmdb.org/t/p/original"
+	DefaultImageURL = "https://image.tmdb.org/t/p"
 )
 
 type Client struct {
@@ -160,11 +160,53 @@ func (c *Client) Season(ctx context.Context, showID int64, season int) ([]Episod
 	return episodes, nil
 }
 
+type ImageCandidate struct {
+	FilePath    string  `json:"file_path"`
+	Language    string  `json:"iso_639_1,omitempty"`
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	AspectRatio float64 `json:"aspect_ratio,omitempty"`
+	VoteAverage float64 `json:"vote_average,omitempty"`
+	VoteCount   int     `json:"vote_count,omitempty"`
+}
+
+type Images struct {
+	Posters   []ImageCandidate
+	Backdrops []ImageCandidate
+}
+
+func (c *Client) Images(ctx context.Context, mediaType string, id int64) (Images, error) {
+	if mediaType != "movie" && mediaType != "tv" {
+		return Images{}, fmt.Errorf("unsupported TMDB media type %q", mediaType)
+	}
+	values := url.Values{}
+	language := c.language
+	if before, _, found := strings.Cut(language, "-"); found {
+		language = before
+	}
+	if language != "" {
+		values.Set("include_image_language", language+",null")
+	}
+	var response struct {
+		Posters   []ImageCandidate `json:"posters"`
+		Backdrops []ImageCandidate `json:"backdrops"`
+	}
+	path := "/" + mediaType + "/" + strconv.FormatInt(id, 10) + "/images"
+	if err := c.get(ctx, path, values, &response); err != nil {
+		return Images{}, err
+	}
+	return Images{Posters: response.Posters, Backdrops: response.Backdrops}, nil
+}
+
 func (c *Client) ImageURL(path string) string {
+	return c.ImageURLSize(path, "original")
+}
+
+func (c *Client) ImageURLSize(path, size string) string {
 	if path == "" {
 		return ""
 	}
-	return c.imageURL + "/" + strings.TrimLeft(path, "/")
+	return c.imageURL + "/" + size + "/" + strings.TrimLeft(path, "/")
 }
 
 func (c *Client) get(ctx context.Context, path string, values url.Values, target any) error {
