@@ -119,9 +119,10 @@ func writeTestFile(t *testing.T, path string) {
 func TestParseProbeOutput(t *testing.T) {
 	result, err := parseProbeOutput([]byte(`{
   "streams": [
-    {"index":0,"codec_name":"av1","codec_type":"video","width":1920,"height":1080,"disposition":{"default":1}},
-    {"index":1,"codec_name":"opus","codec_type":"audio","channels":2,"tags":{"language":"eng","title":"Main"}},
-    {"index":2,"codec_name":"subrip","codec_type":"subtitle","tags":{"language":"eng"}}
+    {"index":0,"codec_name":"hevc","codec_type":"video","profile":"Main 10","width":3840,"height":1604,"color_transfer":"smpte2084","disposition":{"default":1}},
+    {"index":1,"codec_name":"opus","codec_type":"audio","channels":8,"channel_layout":"7.1","tags":{"language":"eng","title":"Main"}},
+    {"index":2,"codec_name":"subrip","codec_type":"subtitle","tags":{"language":"eng"}},
+    {"index":3,"codec_name":"mjpeg","codec_type":"video","width":600,"height":900,"disposition":{"attached_pic":1}}
   ],
   "format":{"format_name":"matroska,webm","duration":"600.125"}
 }`))
@@ -131,7 +132,32 @@ func TestParseProbeOutput(t *testing.T) {
 	if result.DurationMS != 600_125 || result.Container != "matroska,webm" || len(result.Streams) != 3 {
 		t.Fatalf("unexpected probe result: %+v", result)
 	}
-	if !result.Streams[0].IsDefault || result.Streams[2].Codec != "subrip" {
+	if !result.Streams[0].IsDefault || result.Streams[0].Profile != "Main 10" ||
+		result.Streams[0].DynamicRange != "hdr" || result.Streams[1].ChannelLayout != "7.1" ||
+		result.Streams[2].Codec != "subrip" {
 		t.Fatalf("unexpected streams: %+v", result.Streams)
+	}
+}
+
+func TestDynamicRange(t *testing.T) {
+	tests := []struct {
+		name, codecTag, transfer, sideData, want string
+	}{
+		{name: "SDR", want: "sdr"},
+		{name: "HDR10", transfer: "smpte2084", want: "hdr"},
+		{name: "HLG", transfer: "arib-std-b67", want: "hdr"},
+		{name: "Dolby Vision codec tag", codecTag: "dvh1", want: "dolby_vision"},
+		{name: "Dolby Vision side data", transfer: "smpte2084", sideData: "DOVI configuration record", want: "dolby_vision"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var sideData []probeSideData
+			if test.sideData != "" {
+				sideData = []probeSideData{{Type: test.sideData}}
+			}
+			if got := dynamicRange(test.codecTag, test.transfer, sideData); got != test.want {
+				t.Fatalf("dynamicRange() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }

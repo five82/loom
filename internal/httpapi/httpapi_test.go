@@ -70,6 +70,32 @@ func TestMediaRangeAndProgress(t *testing.T) {
 	}
 }
 
+func TestItemTechnicalMetadata(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var item store.Item
+	if err := json.NewDecoder(response.Body).Decode(&item); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || item.Media == nil || len(item.Media.Streams) != 2 {
+		t.Fatalf("technical metadata response status=%d item=%+v", response.StatusCode, item)
+	}
+	video, audio := item.Media.Streams[0], item.Media.Streams[1]
+	if video.Codec != "hevc" || video.Profile != "Main 10" || video.DynamicRange != "hdr" ||
+		audio.Codec != "opus" || audio.ChannelLayout != "7.1" {
+		t.Fatalf("unexpected technical metadata: %+v", item.Media.Streams)
+	}
+}
+
 func TestImageSelectionAPI(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
@@ -264,7 +290,13 @@ func testCatalog(t *testing.T) (*store.Store, int64, int64, []byte) {
 	}
 	mediaID, err := catalog.UpsertMedia(ctx, store.MediaFile{
 		ItemID: itemID, Path: path, Size: int64(len(contents)), DurationMS: 600_000, LastSeenScanID: scanID,
-	}, nil)
+	}, []store.Stream{{
+		Index: 0, Kind: "video", Codec: "hevc", Profile: "Main 10", Width: 3840,
+		Height: 1604, DynamicRange: "hdr", IsDefault: true,
+	}, {
+		Index: 1, Kind: "audio", Codec: "opus", Channels: 8, ChannelLayout: "7.1",
+		IsDefault: true,
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

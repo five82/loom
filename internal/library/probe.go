@@ -55,26 +55,36 @@ func (p *FFProber) Probe(ctx context.Context, path string) (ProbeResult, error) 
 	return parseProbeOutput(output)
 }
 
+type probeSideData struct {
+	Type string `json:"side_data_type"`
+}
+
 type probeJSON struct {
 	Format struct {
 		Duration   string `json:"duration"`
 		FormatName string `json:"format_name"`
 	} `json:"format"`
 	Streams []struct {
-		Index     int    `json:"index"`
-		CodecType string `json:"codec_type"`
-		CodecName string `json:"codec_name"`
-		Width     int    `json:"width"`
-		Height    int    `json:"height"`
-		Channels  int    `json:"channels"`
-		Duration  string `json:"duration"`
-		Tags      struct {
+		Index         int             `json:"index"`
+		CodecType     string          `json:"codec_type"`
+		CodecName     string          `json:"codec_name"`
+		CodecTag      string          `json:"codec_tag_string"`
+		Profile       string          `json:"profile"`
+		Width         int             `json:"width"`
+		Height        int             `json:"height"`
+		Channels      int             `json:"channels"`
+		ChannelLayout string          `json:"channel_layout"`
+		ColorTransfer string          `json:"color_transfer"`
+		Duration      string          `json:"duration"`
+		SideData      []probeSideData `json:"side_data_list"`
+		Tags          struct {
 			Language string `json:"language"`
 			Title    string `json:"title"`
 		} `json:"tags"`
 		Disposition struct {
-			Default int `json:"default"`
-			Forced  int `json:"forced"`
+			Default     int `json:"default"`
+			Forced      int `json:"forced"`
+			AttachedPic int `json:"attached_pic"`
 		} `json:"disposition"`
 	} `json:"streams"`
 }
@@ -90,18 +100,45 @@ func parseProbeOutput(data []byte) (ProbeResult, error) {
 		if rawStream.CodecType != "video" && rawStream.CodecType != "audio" && rawStream.CodecType != "subtitle" {
 			continue
 		}
-		result.Streams = append(result.Streams, store.Stream{
+		if rawStream.CodecType == "video" && rawStream.Disposition.AttachedPic != 0 {
+			continue
+		}
+		stream := store.Stream{
 			Index: rawStream.Index, Kind: rawStream.CodecType, Codec: rawStream.CodecName,
-			Language: rawStream.Tags.Language, Title: rawStream.Tags.Title,
+			Profile: rawStream.Profile, Language: rawStream.Tags.Language, Title: rawStream.Tags.Title,
 			Width: rawStream.Width, Height: rawStream.Height, Channels: rawStream.Channels,
-			IsDefault: rawStream.Disposition.Default != 0,
-			IsForced:  rawStream.Disposition.Forced != 0,
-		})
+			ChannelLayout: rawStream.ChannelLayout,
+			IsDefault:     rawStream.Disposition.Default != 0,
+			IsForced:      rawStream.Disposition.Forced != 0,
+		}
+		if rawStream.CodecType == "video" {
+			stream.DynamicRange = dynamicRange(rawStream.CodecTag, rawStream.ColorTransfer, rawStream.SideData)
+		}
+		result.Streams = append(result.Streams, stream)
 		if result.DurationMS == 0 {
 			result.DurationMS = durationMS(rawStream.Duration)
 		}
 	}
 	return result, nil
+}
+
+func dynamicRange(codecTag, colorTransfer string, sideData []probeSideData) string {
+	codecTag = strings.ToLower(codecTag)
+	if codecTag == "dvhe" || codecTag == "dvh1" {
+		return "dolby_vision"
+	}
+	for _, data := range sideData {
+		if strings.Contains(strings.ToLower(data.Type), "dovi") ||
+			strings.Contains(strings.ToLower(data.Type), "dolby vision") {
+			return "dolby_vision"
+		}
+	}
+	switch strings.ToLower(colorTransfer) {
+	case "smpte2084", "arib-std-b67":
+		return "hdr"
+	default:
+		return "sdr"
+	}
 }
 
 func durationMS(value string) int64 {

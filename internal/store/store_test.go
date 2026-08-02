@@ -30,7 +30,12 @@ func TestCatalogAndProgress(t *testing.T) {
 		ItemID: itemID, Path: "/movies/Arrival (2016)/Arrival (2016).mkv",
 		Size: 100, MTimeNS: 20, DurationMS: 600_000, Container: "matroska",
 		LastSeenScanID: scanID,
-	}, []Stream{{Index: 0, Kind: "video", Codec: "av1"}})
+	}, []Stream{{
+		Index: 0, Kind: "video", Codec: "hevc", Profile: "Main 10",
+		Width: 3840, Height: 1604, DynamicRange: "hdr", IsDefault: true,
+	}, {
+		Index: 1, Kind: "audio", Codec: "opus", Channels: 8, ChannelLayout: "7.1",
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +47,13 @@ func TestCatalogAndProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.Title != "Arrival" || item.Media == nil || len(item.Media.Streams) != 1 {
+	if item.Title != "Arrival" || item.Media == nil || len(item.Media.Streams) != 2 {
 		t.Fatalf("unexpected item: %+v", item)
+	}
+	video, audio := item.Media.Streams[0], item.Media.Streams[1]
+	if video.Profile != "Main 10" || video.DynamicRange != "hdr" ||
+		audio.ChannelLayout != "7.1" {
+		t.Fatalf("technical metadata was not persisted: %+v", item.Media.Streams)
 	}
 
 	progress, err := catalog.SetProgress(ctx, itemID, 60_000, 600_000)
@@ -121,7 +131,7 @@ func TestEpisodeInheritsShowImages(t *testing.T) {
 	}
 }
 
-func TestSchemaOneMigratesImageSelections(t *testing.T) {
+func TestSchemaOneMigratesImageSelectionsAndMediaStreams(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "loom.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -138,6 +148,27 @@ CREATE TABLE images (
 );
 INSERT INTO images(id, item_id, kind, path, source_url)
 VALUES (7, 3, 'poster', '/poster.jpg', 'https://example/poster.jpg');
+CREATE TABLE media_files (
+    id INTEGER PRIMARY KEY,
+    mtime_ns INTEGER NOT NULL
+);
+INSERT INTO media_files(id, mtime_ns) VALUES (4, 123);
+CREATE TABLE media_streams (
+    id INTEGER PRIMARY KEY,
+    media_file_id INTEGER NOT NULL,
+    stream_index INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    codec TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    channels INTEGER NOT NULL DEFAULT 0,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    is_forced INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO media_streams(id, media_file_id, stream_index, kind, codec)
+VALUES (5, 4, 0, 'video', 'hevc');
 PRAGMA user_version = 1;`)
 	if err != nil {
 		t.Fatal(err)
@@ -161,9 +192,20 @@ PRAGMA user_version = 1;`)
 		Scan(&provider, &tag, &manuallySelected); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 || provider != "tmdb" || tag != "legacy-7" || manuallySelected {
-		t.Fatalf("migration result = version %d, provider %q, tag %q, manual %v",
-			version, provider, tag, manuallySelected)
+	var mtime int64
+	var profile, channelLayout, dynamicRange string
+	if err := catalog.db.QueryRow(`
+SELECT media_files.mtime_ns, media_streams.profile, media_streams.channel_layout,
+    media_streams.dynamic_range
+FROM media_files JOIN media_streams ON media_streams.media_file_id = media_files.id
+WHERE media_files.id = 4`).Scan(&mtime, &profile, &channelLayout, &dynamicRange); err != nil {
+		t.Fatal(err)
+	}
+	if version != 3 || provider != "tmdb" || tag != "legacy-7" || manuallySelected ||
+		mtime != -1 || profile != "" || channelLayout != "" || dynamicRange != "" {
+		t.Fatalf("migration result = version %d, provider %q, tag %q, manual %v, "+
+			"mtime %d, profile %q, layout %q, range %q", version, provider, tag,
+			manuallySelected, mtime, profile, channelLayout, dynamicRange)
 	}
 }
 

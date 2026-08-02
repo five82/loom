@@ -138,8 +138,10 @@ season numbers longer than two digits. Videos without an episode identifier are
 cataloged as unmatched.
 
 NFO files, local artwork, external subtitle files, and movie extras are ignored.
-Embedded stream details, including SubRip subtitle tracks, are reported from
-`ffprobe`.
+Embedded stream details are reported from `ffprobe`, including video and audio
+codecs, resolution, HDR/Dolby Vision classification, audio channel layout, and
+subtitle tracks. Upgrading a catalog from an older schema causes the next
+library scan to re-probe existing media for newly supported stream details.
 
 ## HTTP API
 

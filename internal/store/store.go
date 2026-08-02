@@ -54,14 +54,20 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version > 2 {
-		return fmt.Errorf("database schema version %d is newer than supported version 2", version)
+	if version > 3 {
+		return fmt.Errorf("database schema version %d is newer than supported version 3", version)
 	}
-	if version == 2 {
+	if version == 3 {
 		return nil
 	}
 	if version == 1 {
-		return s.migrateImagesV2()
+		if err := s.migrateImagesV2(); err != nil {
+			return err
+		}
+		version = 2
+	}
+	if version == 2 {
+		return s.migrateMediaStreamsV3()
 	}
 	const schema = `
 CREATE TABLE libraries (
@@ -121,11 +127,14 @@ CREATE TABLE media_streams (
     stream_index INTEGER NOT NULL,
     kind TEXT NOT NULL,
     codec TEXT NOT NULL DEFAULT '',
+    profile TEXT NOT NULL DEFAULT '',
     language TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL DEFAULT '',
     width INTEGER NOT NULL DEFAULT 0,
     height INTEGER NOT NULL DEFAULT 0,
     channels INTEGER NOT NULL DEFAULT 0,
+    channel_layout TEXT NOT NULL DEFAULT '',
+    dynamic_range TEXT NOT NULL DEFAULT '',
     is_default INTEGER NOT NULL DEFAULT 0,
     is_forced INTEGER NOT NULL DEFAULT 0,
     UNIQUE (media_file_id, stream_index)
@@ -153,7 +162,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -192,6 +201,29 @@ PRAGMA user_version = 2;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit image migration: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateMediaStreamsV3() error {
+	const migration = `
+ALTER TABLE media_streams ADD COLUMN profile TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_streams ADD COLUMN channel_layout TEXT NOT NULL DEFAULT '';
+ALTER TABLE media_streams ADD COLUMN dynamic_range TEXT NOT NULL DEFAULT '';
+-- Invalidate the file fingerprint so the next scan populates the new probe fields.
+UPDATE media_files SET mtime_ns = -1;
+PRAGMA user_version = 3;
+`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin media stream migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(migration); err != nil {
+		return fmt.Errorf("migrate media streams to schema version 3: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit media stream migration: %w", err)
 	}
 	return nil
 }
@@ -353,16 +385,19 @@ type MediaFile struct {
 }
 
 type Stream struct {
-	Index     int    `json:"index"`
-	Kind      string `json:"kind"`
-	Codec     string `json:"codec"`
-	Language  string `json:"language,omitempty"`
-	Title     string `json:"title,omitempty"`
-	Width     int    `json:"width,omitempty"`
-	Height    int    `json:"height,omitempty"`
-	Channels  int    `json:"channels,omitempty"`
-	IsDefault bool   `json:"is_default"`
-	IsForced  bool   `json:"is_forced"`
+	Index         int    `json:"index"`
+	Kind          string `json:"kind"`
+	Codec         string `json:"codec"`
+	Profile       string `json:"profile,omitempty"`
+	Language      string `json:"language,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Width         int    `json:"width,omitempty"`
+	Height        int    `json:"height,omitempty"`
+	Channels      int    `json:"channels,omitempty"`
+	ChannelLayout string `json:"channel_layout,omitempty"`
+	DynamicRange  string `json:"dynamic_range,omitempty"`
+	IsDefault     bool   `json:"is_default"`
+	IsForced      bool   `json:"is_forced"`
 }
 
 func (s *Store) MediaByPath(ctx context.Context, path string) (*MediaFile, error) {
@@ -426,11 +461,12 @@ RETURNING id`, media.ItemID, media.Path, media.Size, media.MTimeNS, media.Durati
 	}
 	for _, stream := range streams {
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO media_streams(media_file_id, stream_index, kind, codec, language, title,
-    width, height, channels, is_default, is_forced)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, stream.Index, stream.Kind, stream.Codec,
-			stream.Language, stream.Title, stream.Width, stream.Height, stream.Channels,
-			stream.IsDefault, stream.IsForced); err != nil {
+INSERT INTO media_streams(media_file_id, stream_index, kind, codec, profile, language, title,
+    width, height, channels, channel_layout, dynamic_range, is_default, is_forced)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, stream.Index, stream.Kind,
+			stream.Codec, stream.Profile, stream.Language, stream.Title, stream.Width, stream.Height,
+			stream.Channels, stream.ChannelLayout, stream.DynamicRange, stream.IsDefault,
+			stream.IsForced); err != nil {
 			return 0, fmt.Errorf("insert media stream: %w", err)
 		}
 	}
@@ -640,7 +676,8 @@ WHERE m.id = ? AND i.available = 1`, id).Scan(&media.ID, &media.ItemID, &media.P
 
 func (s *Store) streams(ctx context.Context, mediaID int64) ([]Stream, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT stream_index, kind, codec, language, title, width, height, channels, is_default, is_forced
+SELECT stream_index, kind, codec, profile, language, title, width, height, channels,
+    channel_layout, dynamic_range, is_default, is_forced
 FROM media_streams WHERE media_file_id = ? ORDER BY stream_index`, mediaID)
 	if err != nil {
 		return nil, fmt.Errorf("list media streams: %w", err)
@@ -649,9 +686,10 @@ FROM media_streams WHERE media_file_id = ? ORDER BY stream_index`, mediaID)
 	var streams []Stream
 	for rows.Next() {
 		var stream Stream
-		if err := rows.Scan(&stream.Index, &stream.Kind, &stream.Codec, &stream.Language,
-			&stream.Title, &stream.Width, &stream.Height, &stream.Channels,
-			&stream.IsDefault, &stream.IsForced); err != nil {
+		if err := rows.Scan(&stream.Index, &stream.Kind, &stream.Codec, &stream.Profile,
+			&stream.Language, &stream.Title, &stream.Width, &stream.Height, &stream.Channels,
+			&stream.ChannelLayout, &stream.DynamicRange, &stream.IsDefault,
+			&stream.IsForced); err != nil {
 			return nil, fmt.Errorf("scan media stream: %w", err)
 		}
 		streams = append(streams, stream)
