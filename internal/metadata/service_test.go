@@ -27,7 +27,7 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	alternateLogo := encodedPNG(t, color.RGBA{G: 255, A: 255})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/search/movie", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"results":[{"id":329865,"title":"Arrival","release_date":"2016-11-10"}]}`)
+		_, _ = fmt.Fprint(w, `{"results":[{"id":329865,"title":"Arrival","release_date":"2016-11-10","vote_average":7.6,"vote_count":19608},{"id":472349,"title":"Arrival","release_date":"2016-05-25","vote_average":4.9,"vote_count":8}]}`)
 	})
 	mux.HandleFunc("/movie/329865", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"id":329865,"title":"Arrival","overview":"A linguist meets visitors.","release_date":"2016-11-10","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg"}`)
@@ -394,6 +394,63 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	if detailRequests.Load() != 1 || imageRequests.Load() != 1 {
 		t.Fatalf("complete artwork was fetched again: details %d, images %d",
 			detailRequests.Load(), imageRequests.Load())
+	}
+}
+
+func TestSelectAutomaticMatch(t *testing.T) {
+	tests := []struct {
+		name       string
+		matches    []tmdb.SearchResult
+		wantID     int64
+		wantReason string
+	}{
+		{
+			name:       "no exact candidates",
+			wantReason: "no exact title and year candidates",
+		},
+		{
+			name:    "unique candidate retains existing behavior",
+			matches: []tmdb.SearchResult{{ID: 1}},
+			wantID:  1,
+		},
+		{
+			name: "dominant candidate wins exact collision",
+			matches: []tmdb.SearchResult{
+				{ID: 2, VoteAverage: 7.0, VoteCount: 2},
+				{ID: 1, VoteAverage: 6.1, VoteCount: 274},
+			},
+			wantID: 1,
+		},
+		{
+			name: "close candidates remain unmatched",
+			matches: []tmdb.SearchResult{
+				{ID: 1, VoteAverage: 7.5, VoteCount: 100},
+				{ID: 2, VoteAverage: 7.0, VoteCount: 11},
+			},
+			wantReason: "leading candidate does not clearly dominate the alternatives",
+		},
+		{
+			name: "weak leader remains unmatched",
+			matches: []tmdb.SearchResult{
+				{ID: 1, VoteAverage: 8.0, VoteCount: 4},
+				{ID: 2, VoteAverage: 0, VoteCount: 0},
+			},
+			wantReason: "leading candidate is below the vote threshold",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, reason := selectAutomaticMatch(test.matches)
+			if test.wantID == 0 {
+				if got != nil || reason != test.wantReason {
+					t.Fatalf("selectAutomaticMatch() = %+v, %q; want nil, %q", got, reason, test.wantReason)
+				}
+				return
+			}
+			if got == nil || got.ID != test.wantID || reason != "" {
+				t.Fatalf("selectAutomaticMatch() = %+v, %q; want ID %d", got, reason, test.wantID)
+			}
+		})
 	}
 }
 

@@ -37,14 +37,16 @@ func NewWithURLs(apiKey, language, baseURL, imageURL string, client *http.Client
 }
 
 type SearchResult struct {
-	ID            int64  `json:"id"`
-	MediaType     string `json:"media_type"`
-	Title         string `json:"title"`
-	OriginalTitle string `json:"original_title,omitempty"`
-	Overview      string `json:"overview,omitempty"`
-	ReleaseDate   string `json:"release_date,omitempty"`
-	Year          int    `json:"year,omitempty"`
-	PosterPath    string `json:"poster_path,omitempty"`
+	ID            int64   `json:"id"`
+	MediaType     string  `json:"media_type"`
+	Title         string  `json:"title"`
+	OriginalTitle string  `json:"original_title,omitempty"`
+	Overview      string  `json:"overview,omitempty"`
+	ReleaseDate   string  `json:"release_date,omitempty"`
+	Year          int     `json:"year,omitempty"`
+	PosterPath    string  `json:"poster_path,omitempty"`
+	VoteAverage   float64 `json:"vote_average,omitempty"`
+	VoteCount     int     `json:"vote_count,omitempty"`
 }
 
 func (c *Client) Search(ctx context.Context, mediaType, query string, year int) ([]SearchResult, error) {
@@ -61,15 +63,17 @@ func (c *Client) Search(ctx context.Context, mediaType, query string, year int) 
 	}
 	var response struct {
 		Results []struct {
-			ID            int64  `json:"id"`
-			Title         string `json:"title"`
-			Name          string `json:"name"`
-			OriginalTitle string `json:"original_title"`
-			OriginalName  string `json:"original_name"`
-			Overview      string `json:"overview"`
-			ReleaseDate   string `json:"release_date"`
-			FirstAirDate  string `json:"first_air_date"`
-			PosterPath    string `json:"poster_path"`
+			ID            int64   `json:"id"`
+			Title         string  `json:"title"`
+			Name          string  `json:"name"`
+			OriginalTitle string  `json:"original_title"`
+			OriginalName  string  `json:"original_name"`
+			Overview      string  `json:"overview"`
+			ReleaseDate   string  `json:"release_date"`
+			FirstAirDate  string  `json:"first_air_date"`
+			PosterPath    string  `json:"poster_path"`
+			VoteAverage   float64 `json:"vote_average"`
+			VoteCount     int     `json:"vote_count"`
 		} `json:"results"`
 	}
 	if err := c.get(ctx, "/search/"+mediaType, values, &response); err != nil {
@@ -84,6 +88,7 @@ func (c *Client) Search(ctx context.Context, mediaType, query string, year int) 
 		results = append(results, SearchResult{
 			ID: raw.ID, MediaType: mediaType, Title: title, OriginalTitle: original,
 			Overview: raw.Overview, ReleaseDate: date, Year: dateYear(date), PosterPath: raw.PosterPath,
+			VoteAverage: raw.VoteAverage, VoteCount: raw.VoteCount,
 		})
 	}
 	return results, nil

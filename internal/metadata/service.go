@@ -24,7 +24,12 @@ import (
 	"github.com/five82/loom/internal/tmdb"
 )
 
-const maxImageBytes = 25 << 20
+const (
+	maxImageBytes                     = 25 << 20
+	automaticMatchMinVotes            = 5
+	automaticMatchMinVoteAverage      = 2.0
+	automaticMatchVoteDominanceFactor = 10
+)
 
 var (
 	ErrImageOptionNotFound = errors.New("image option not found")
@@ -80,12 +85,25 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 		}
 		matches = append(matches, result)
 	}
-	if len(matches) != 1 {
+	selected, reason := selectAutomaticMatch(matches)
+	if selected == nil {
+		candidateIDs := make([]int64, len(matches))
+		candidateVotes := make([]int, len(matches))
+		candidateAverages := make([]float64, len(matches))
+		for i, candidate := range matches {
+			candidateIDs[i] = candidate.ID
+			candidateVotes[i] = candidate.VoteCount
+			candidateAverages[i] = candidate.VoteAverage
+		}
+		s.logger.Info("metadata automatic match skipped", "item_id", item.ID,
+			"title", item.Title, "reason", reason, "candidate_ids", candidateIDs,
+			"candidate_vote_counts", candidateVotes, "candidate_vote_averages", candidateAverages)
 		return nil
 	}
 	s.logger.Info("metadata automatically matched", "item_id", item.ID,
-		"title", item.Title, "tmdb_id", matches[0].ID)
-	return s.Match(ctx, itemID, matches[0].ID)
+		"title", item.Title, "tmdb_id", selected.ID, "candidate_count", len(matches),
+		"vote_count", selected.VoteCount, "vote_average", selected.VoteAverage)
+	return s.Match(ctx, itemID, selected.ID)
 }
 
 func (s *Service) backfillImages(ctx context.Context, item *store.Item) error {
@@ -538,6 +556,35 @@ func metadataType(kind string) string {
 		return "tv"
 	}
 	return "movie"
+}
+
+func selectAutomaticMatch(matches []tmdb.SearchResult) (*tmdb.SearchResult, string) {
+	if len(matches) == 0 {
+		return nil, "no exact title and year candidates"
+	}
+	if len(matches) == 1 {
+		return &matches[0], ""
+	}
+
+	best := 0
+	secondHighestVotes := 0
+	for i := 1; i < len(matches); i++ {
+		if matches[i].VoteCount > matches[best].VoteCount ||
+			(matches[i].VoteCount == matches[best].VoteCount && matches[i].VoteAverage > matches[best].VoteAverage) {
+			secondHighestVotes = max(secondHighestVotes, matches[best].VoteCount)
+			best = i
+		} else {
+			secondHighestVotes = max(secondHighestVotes, matches[i].VoteCount)
+		}
+	}
+	selected := &matches[best]
+	if selected.VoteCount < automaticMatchMinVotes || selected.VoteAverage < automaticMatchMinVoteAverage {
+		return nil, "leading candidate is below the vote threshold"
+	}
+	if secondHighestVotes > 0 && selected.VoteCount < secondHighestVotes*automaticMatchVoteDominanceFactor {
+		return nil, "leading candidate does not clearly dominate the alternatives"
+	}
+	return selected, ""
 }
 
 func normalizedTitle(value string) string {
