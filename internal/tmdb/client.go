@@ -17,6 +17,16 @@ const (
 	DefaultImageURL = "https://image.tmdb.org/t/p"
 )
 
+type HTTPError struct {
+	StatusCode int
+	Status     string
+	Detail     string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("TMDB returned %s: %s", e.Status, e.Detail)
+}
+
 type Client struct {
 	apiKey   string
 	language string
@@ -262,7 +272,11 @@ func (c *Client) get(ctx context.Context, path string, values url.Values, target
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("TMDB returned %s: %s", response.Status, strings.TrimSpace(string(message)))
+		return &HTTPError{
+			StatusCode: response.StatusCode,
+			Status:     response.Status,
+			Detail:     strings.TrimSpace(string(message)),
+		}
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(target); err != nil {
 		return fmt.Errorf("decode TMDB response: %w", err)

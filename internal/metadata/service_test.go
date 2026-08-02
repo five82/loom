@@ -328,6 +328,54 @@ func TestTVSeasonPosterArtwork(t *testing.T) {
 	}
 }
 
+func TestMissingTMDBSeasonHasNoPosterArtwork(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"status_code":34,"status_message":"The resource you requested could not be found."}`, http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	catalog, err := store.Open(filepath.Join(root, "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, SourceKey: "show:Show", Kind: "show", Title: "Show", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seasonID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, ParentID: &showID, SourceKey: "show:Show:season:9",
+		Kind: "season", Title: "Season 9", SeasonNumber: 9, ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, showID, store.MetadataUpdate{TMDBID: 100, Title: "Show"}); err != nil {
+		t.Fatal(err)
+	}
+	client := tmdb.NewWithURLs("key", "en-US", server.URL, server.URL+"/images", server.Client())
+	service := New(catalog, client, filepath.Join(root, "images"), slog.Default())
+
+	options, err := service.ImageOptions(ctx, seasonID, "poster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options == nil || len(options) != 0 {
+		t.Fatalf("season poster options = %+v, want an empty list", options)
+	}
+	if _, err := service.ResetImage(ctx, seasonID, "poster"); !errors.Is(err, ErrImageUnavailable) {
+		t.Fatalf("reset missing season poster error = %v, want ErrImageUnavailable", err)
+	}
+}
+
 func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	imageBytes := encodedPNG(t, color.RGBA{R: 255, G: 255, A: 255})
 	var searchRequests, detailRequests, imageRequests atomic.Int32

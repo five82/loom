@@ -217,6 +217,9 @@ func (s *Service) ImageOptions(ctx context.Context, itemID int64, kind string) (
 	thumbnailSize := "w342"
 	if item.Kind == "season" {
 		candidates, err = s.tmdb.SeasonImages(ctx, provider.TMDBID, item.SeasonNumber)
+		if isTMDBNotFound(err) {
+			err = nil
+		}
 	} else {
 		var images tmdb.Images
 		images, err = s.tmdb.Images(ctx, metadataType(item.Kind), item.TMDBID)
@@ -275,6 +278,12 @@ func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*s
 	providerPath := ""
 	if item.Kind == "season" {
 		details, err := s.tmdb.Season(ctx, provider.TMDBID, item.SeasonNumber)
+		if isTMDBNotFound(err) {
+			return nil, fmt.Errorf(
+				"%w: TMDB has no season %d for item %d",
+				ErrImageUnavailable, item.SeasonNumber, itemID,
+			)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -306,6 +315,11 @@ func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*s
 			"provider_path", providerPath)
 	}
 	return reset, err
+}
+
+func isTMDBNotFound(err error) bool {
+	var responseError *tmdb.HTTPError
+	return errors.As(err, &responseError) && responseError.StatusCode == http.StatusNotFound
 }
 
 func (s *Service) imageItem(ctx context.Context, itemID int64, kind string) (*store.Item, *store.Item, error) {
