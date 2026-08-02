@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/five82/loom/internal/store"
@@ -175,6 +176,75 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 	if _, err := catalog.ItemImage(ctx, itemID, "logo"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("logo survived identity change: %v", err)
+	}
+}
+
+func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
+	imageBytes := encodedPNG(t, color.RGBA{R: 255, G: 255, A: 255})
+	var searchRequests, detailRequests, imageRequests atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search/movie", func(w http.ResponseWriter, _ *http.Request) {
+		searchRequests.Add(1)
+		_, _ = fmt.Fprint(w, `{"results":[]}`)
+	})
+	mux.HandleFunc("/movie/10", func(w http.ResponseWriter, _ *http.Request) {
+		detailRequests.Add(1)
+		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg"}`)
+	})
+	mux.HandleFunc("/movie/10/images", func(w http.ResponseWriter, _ *http.Request) {
+		imageRequests.Add(1)
+		_, _ = fmt.Fprint(w, `{"posters":[],"backdrops":[],"logos":[{"file_path":"/logo.png"}]}`)
+	})
+	mux.HandleFunc("/images/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(imageBytes)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	catalog, err := store.Open(filepath.Join(root, "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, SourceKey: "Movie", Kind: "movie", Title: "Movie", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, itemID, store.MetadataUpdate{TMDBID: 10, Title: "Movie"}); err != nil {
+		t.Fatal(err)
+	}
+	client := tmdb.NewWithURLs("key", "en-US", server.URL, server.URL+"/images", server.Client())
+	service := New(catalog, client, filepath.Join(root, "images"), slog.Default())
+
+	if err := service.AutoMatch(ctx, itemID); err != nil {
+		t.Fatal(err)
+	}
+	item, err := catalog.Item(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.PosterImageID == 0 || item.BackdropImageID == 0 || item.LogoImageID == 0 {
+		t.Fatalf("artwork was not backfilled: %+v", item)
+	}
+	if searchRequests.Load() != 0 || detailRequests.Load() != 1 || imageRequests.Load() != 1 {
+		t.Fatalf("provider requests = search %d, details %d, images %d", searchRequests.Load(),
+			detailRequests.Load(), imageRequests.Load())
+	}
+
+	if err := service.AutoMatch(ctx, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if detailRequests.Load() != 1 || imageRequests.Load() != 1 {
+		t.Fatalf("complete artwork was fetched again: details %d, images %d",
+			detailRequests.Load(), imageRequests.Load())
 	}
 }
 

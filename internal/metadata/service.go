@@ -52,14 +52,17 @@ func (s *Service) Search(ctx context.Context, mediaType, query string, year int)
 	return s.tmdb.Search(ctx, mediaType, query, year)
 }
 
-// AutoMatch applies a result only when title and year make the choice unambiguous.
+// AutoMatch applies unambiguous matches and backfills missing artwork for existing matches.
 func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 	item, err := s.store.Item(ctx, itemID)
 	if err != nil {
 		return err
 	}
-	if item.TMDBID != 0 || (item.Kind != "movie" && item.Kind != "show") {
+	if item.Kind != "movie" && item.Kind != "show" {
 		return nil
+	}
+	if item.TMDBID != 0 {
+		return s.backfillImages(ctx, item)
 	}
 	mediaType := metadataType(item.Kind)
 	results, err := s.tmdb.Search(ctx, mediaType, item.Title, item.Year)
@@ -83,6 +86,32 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 	s.logger.Info("metadata automatically matched", "item_id", item.ID,
 		"title", item.Title, "tmdb_id", matches[0].ID)
 	return s.Match(ctx, itemID, matches[0].ID)
+}
+
+func (s *Service) backfillImages(ctx context.Context, item *store.Item) error {
+	mediaType := metadataType(item.Kind)
+	if item.PosterImageID == 0 || item.BackdropImageID == 0 {
+		details, err := s.tmdb.Details(ctx, mediaType, item.TMDBID)
+		if err != nil {
+			return err
+		}
+		if item.PosterImageID == 0 {
+			s.saveDefaultImage(ctx, item.ID, "poster", details.PosterPath)
+		}
+		if item.BackdropImageID == 0 {
+			s.saveDefaultImage(ctx, item.ID, "backdrop", details.BackdropPath)
+		}
+	}
+	if item.LogoImageID == 0 {
+		images, err := s.tmdb.Images(ctx, mediaType, item.TMDBID)
+		if err != nil {
+			return err
+		}
+		if len(images.Logos) > 0 {
+			s.saveDefaultImage(ctx, item.ID, "logo", images.Logos[0].FilePath)
+		}
+	}
+	return nil
 }
 
 func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {

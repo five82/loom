@@ -91,7 +91,8 @@ loom scan tv
 
 Only one manual or scheduled scan runs at a time. Scans are incremental:
 unchanged files are not probed again. New movies and shows are automatically
-matched only when TMDB returns one unambiguous title/year match.
+matched only when TMDB returns one unambiguous title/year match. Scans also
+backfill missing poster, backdrop, and logo artwork for existing TMDB matches.
 
 Review and correct uncertain matches from the CLI:
 
