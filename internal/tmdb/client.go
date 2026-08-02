@@ -1,0 +1,204 @@
+package tmdb
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const (
+	DefaultBaseURL  = "https://api.themoviedb.org/3"
+	DefaultImageURL = "https://image.tmdb.org/t/p/original"
+)
+
+type Client struct {
+	apiKey   string
+	language string
+	baseURL  string
+	imageURL string
+	http     *http.Client
+}
+
+func New(apiKey, language string) *Client {
+	return NewWithURLs(apiKey, language, DefaultBaseURL, DefaultImageURL, &http.Client{Timeout: 20 * time.Second})
+}
+
+func NewWithURLs(apiKey, language, baseURL, imageURL string, client *http.Client) *Client {
+	return &Client{
+		apiKey: apiKey, language: language, baseURL: strings.TrimRight(baseURL, "/"),
+		imageURL: strings.TrimRight(imageURL, "/"), http: client,
+	}
+}
+
+type SearchResult struct {
+	ID            int64  `json:"id"`
+	MediaType     string `json:"media_type"`
+	Title         string `json:"title"`
+	OriginalTitle string `json:"original_title,omitempty"`
+	Overview      string `json:"overview,omitempty"`
+	ReleaseDate   string `json:"release_date,omitempty"`
+	Year          int    `json:"year,omitempty"`
+	PosterPath    string `json:"poster_path,omitempty"`
+}
+
+func (c *Client) Search(ctx context.Context, mediaType, query string, year int) ([]SearchResult, error) {
+	if mediaType != "movie" && mediaType != "tv" {
+		return nil, fmt.Errorf("unsupported TMDB media type %q", mediaType)
+	}
+	values := url.Values{"query": {query}}
+	if year > 0 {
+		key := "year"
+		if mediaType == "tv" {
+			key = "first_air_date_year"
+		}
+		values.Set(key, strconv.Itoa(year))
+	}
+	var response struct {
+		Results []struct {
+			ID            int64  `json:"id"`
+			Title         string `json:"title"`
+			Name          string `json:"name"`
+			OriginalTitle string `json:"original_title"`
+			OriginalName  string `json:"original_name"`
+			Overview      string `json:"overview"`
+			ReleaseDate   string `json:"release_date"`
+			FirstAirDate  string `json:"first_air_date"`
+			PosterPath    string `json:"poster_path"`
+		} `json:"results"`
+	}
+	if err := c.get(ctx, "/search/"+mediaType, values, &response); err != nil {
+		return nil, err
+	}
+	results := make([]SearchResult, 0, len(response.Results))
+	for _, raw := range response.Results {
+		title, original, date := raw.Title, raw.OriginalTitle, raw.ReleaseDate
+		if mediaType == "tv" {
+			title, original, date = raw.Name, raw.OriginalName, raw.FirstAirDate
+		}
+		results = append(results, SearchResult{
+			ID: raw.ID, MediaType: mediaType, Title: title, OriginalTitle: original,
+			Overview: raw.Overview, ReleaseDate: date, Year: dateYear(date), PosterPath: raw.PosterPath,
+		})
+	}
+	return results, nil
+}
+
+type Details struct {
+	ID           int64
+	Title        string
+	Overview     string
+	ReleaseDate  string
+	Year         int
+	PosterPath   string
+	BackdropPath string
+}
+
+func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Details, error) {
+	if mediaType != "movie" && mediaType != "tv" {
+		return Details{}, fmt.Errorf("unsupported TMDB media type %q", mediaType)
+	}
+	var raw struct {
+		ID           int64  `json:"id"`
+		Title        string `json:"title"`
+		Name         string `json:"name"`
+		Overview     string `json:"overview"`
+		ReleaseDate  string `json:"release_date"`
+		FirstAirDate string `json:"first_air_date"`
+		PosterPath   string `json:"poster_path"`
+		BackdropPath string `json:"backdrop_path"`
+	}
+	if err := c.get(ctx, "/"+mediaType+"/"+strconv.FormatInt(id, 10), nil, &raw); err != nil {
+		return Details{}, err
+	}
+	title, date := raw.Title, raw.ReleaseDate
+	if mediaType == "tv" {
+		title, date = raw.Name, raw.FirstAirDate
+	}
+	return Details{
+		ID: raw.ID, Title: title, Overview: raw.Overview, ReleaseDate: date,
+		Year: dateYear(date), PosterPath: raw.PosterPath, BackdropPath: raw.BackdropPath,
+	}, nil
+}
+
+type Episode struct {
+	ID          int64
+	Number      int
+	Title       string
+	Overview    string
+	ReleaseDate string
+	StillPath   string
+}
+
+func (c *Client) Season(ctx context.Context, showID int64, season int) ([]Episode, error) {
+	var response struct {
+		Episodes []struct {
+			ID            int64  `json:"id"`
+			EpisodeNumber int    `json:"episode_number"`
+			Name          string `json:"name"`
+			Overview      string `json:"overview"`
+			AirDate       string `json:"air_date"`
+			StillPath     string `json:"still_path"`
+		} `json:"episodes"`
+	}
+	path := "/tv/" + strconv.FormatInt(showID, 10) + "/season/" + strconv.Itoa(season)
+	if err := c.get(ctx, path, nil, &response); err != nil {
+		return nil, err
+	}
+	episodes := make([]Episode, 0, len(response.Episodes))
+	for _, raw := range response.Episodes {
+		episodes = append(episodes, Episode{
+			ID: raw.ID, Number: raw.EpisodeNumber, Title: raw.Name, Overview: raw.Overview,
+			ReleaseDate: raw.AirDate, StillPath: raw.StillPath,
+		})
+	}
+	return episodes, nil
+}
+
+func (c *Client) ImageURL(path string) string {
+	if path == "" {
+		return ""
+	}
+	return c.imageURL + "/" + strings.TrimLeft(path, "/")
+}
+
+func (c *Client) get(ctx context.Context, path string, values url.Values, target any) error {
+	if c.apiKey == "" {
+		return fmt.Errorf("TMDB API key is not configured")
+	}
+	if values == nil {
+		values = make(url.Values)
+	}
+	values.Set("api_key", c.apiKey)
+	values.Set("language", c.language)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path+"?"+values.Encode(), nil)
+	if err != nil {
+		return fmt.Errorf("create TMDB request: %w", err)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("TMDB request: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("TMDB returned %s: %s", response.Status, strings.TrimSpace(string(message)))
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(target); err != nil {
+		return fmt.Errorf("decode TMDB response: %w", err)
+	}
+	return nil
+}
+
+func dateYear(date string) int {
+	if len(date) < 4 {
+		return 0
+	}
+	year, _ := strconv.Atoi(date[:4])
+	return year
+}

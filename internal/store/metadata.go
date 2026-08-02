@@ -1,0 +1,122 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+)
+
+// MetadataUpdate applies provider-owned fields to one catalog item.
+type MetadataUpdate struct {
+	TMDBID      int64
+	Title       string
+	Year        int
+	Overview    string
+	ReleaseDate string
+}
+
+func (s *Store) UpdateMetadata(ctx context.Context, itemID int64, metadata MetadataUpdate) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE items SET tmdb_id = ?, title = CASE WHEN ? = '' THEN title ELSE ? END,
+    year = CASE WHEN ? = 0 THEN year ELSE ? END, overview = ?, release_date = ?, updated_at = ?
+WHERE id = ? AND available = 1`, metadata.TMDBID, metadata.Title, metadata.Title,
+		metadata.Year, metadata.Year, metadata.Overview, metadata.ReleaseDate, now(), itemID)
+	if err != nil {
+		return fmt.Errorf("update item metadata: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated metadata count: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) EpisodesForShow(ctx context.Context, showID int64) ([]Item, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
+    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
+    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
+    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
+    i.added_at, i.updated_at
+FROM items i JOIN items season ON season.id = i.parent_id
+WHERE season.parent_id = ? AND i.available = 1 AND i.kind = 'episode'
+ORDER BY i.season_number, i.episode_number`, showID)
+	if err != nil {
+		return nil, fmt.Errorf("list show episodes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var items []Item
+	for rows.Next() {
+		item, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) UnmatchedItems(ctx context.Context) ([]Item, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
+    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
+    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'), 0),
+    COALESCE((SELECT id FROM images WHERE item_id = i.id AND kind = 'backdrop'), 0),
+    i.added_at, i.updated_at
+FROM items i
+WHERE i.available = 1 AND (i.kind = 'unmatched' OR (i.kind IN ('movie', 'show') AND i.tmdb_id = 0))
+ORDER BY i.kind, i.title COLLATE NOCASE`)
+	if err != nil {
+		return nil, fmt.Errorf("list unmatched items: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var items []Item
+	for rows.Next() {
+		item, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+type Image struct {
+	ID        int64  `json:"id"`
+	ItemID    int64  `json:"item_id"`
+	Kind      string `json:"kind"`
+	Path      string `json:"-"`
+	SourceURL string `json:"source_url,omitempty"`
+}
+
+func (s *Store) UpsertImage(ctx context.Context, image Image) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+INSERT INTO images(item_id, kind, path, source_url) VALUES (?, ?, ?, ?)
+ON CONFLICT(item_id, kind) DO UPDATE SET path = excluded.path, source_url = excluded.source_url
+RETURNING id`, image.ItemID, image.Kind, image.Path, image.SourceURL).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("upsert %s image: %w", image.Kind, err)
+	}
+	return id, nil
+}
+
+func (s *Store) Image(ctx context.Context, id int64) (*Image, error) {
+	var image Image
+	err := s.db.QueryRowContext(ctx, `
+SELECT images.id, images.item_id, images.kind, images.path, images.source_url
+FROM images JOIN items ON items.id = images.item_id
+WHERE images.id = ? AND items.available = 1`, id).
+		Scan(&image.ID, &image.ItemID, &image.Kind, &image.Path, &image.SourceURL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get image: %w", err)
+	}
+	return &image, nil
+}
