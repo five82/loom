@@ -410,10 +410,23 @@ func newConfigCommand() *cobra.Command {
 }
 
 func newDeveloperCommand() *cobra.Command {
-	command := &cobra.Command{Use: "developer", Short: "Developer utilities"}
+	command := &cobra.Command{
+		Use:   "developer",
+		Short: "Developer utilities",
+		Long: `Developer utilities.
+
+Reset stops the daemon and deletes everything under paths.state_dir except the
+loaded config.toml. This includes the database, catalog, playback state,
+metadata, daemon logs, and downloaded artwork. Media libraries and config.toml
+are not modified.`,
+	}
 	command.AddCommand(&cobra.Command{
 		Use:   "reset",
-		Short: "Erase Loom state while preserving config.toml",
+		Short: "Delete all state while keeping media and config.toml",
+		Long: `Stop Loom and delete everything under paths.state_dir except the loaded
+config.toml. This deletes the database, catalog, playback state, metadata,
+daemon logs, and downloaded artwork. Media libraries and config.toml are not
+modified.`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()
 			if err != nil {

@@ -88,8 +88,10 @@ loom developer reset
 ```
 
 This stops the daemon if necessary and deletes everything under
-`paths.state_dir`, including the database, logs, and artwork. The loaded
-`config.toml` is preserved, even when it is stored inside the state directory.
+`paths.state_dir`, including the database, catalog, playback state, metadata,
+daemon logs, and downloaded artwork. Media libraries are not modified. The
+loaded `config.toml` is also preserved, even when it is stored inside the state
+directory.
 
 For manual scans:
 
