@@ -81,6 +81,16 @@ loom stop
 to become ready. `loom stop` requests a graceful shutdown over that socket. A
 PID file is not used.
 
+To return Loom to a clean state during development:
+
+```bash
+loom developer reset
+```
+
+This stops the daemon if necessary and deletes everything under
+`paths.state_dir`, including the database, logs, and artwork. The loaded
+`config.toml` is preserved, even when it is stored inside the state directory.
+
 For manual scans:
 
 ```bash

@@ -116,6 +116,53 @@ func (c *Config) EnsureStateDir() error {
 	return nil
 }
 
+// ResetState removes all Loom-owned state while preserving the loaded config file.
+func (c *Config) ResetState() error {
+	if c.SourcePath == "" || !pathContains(c.Paths.StateDir, c.SourcePath) {
+		if err := os.RemoveAll(c.Paths.StateDir); err != nil {
+			return fmt.Errorf("remove state directory %q: %w", c.Paths.StateDir, err)
+		}
+		return nil
+	}
+	return removeAllExcept(c.Paths.StateDir, c.SourcePath)
+}
+
+func removeAllExcept(dir, preservePath string) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read state directory %q: %w", dir, err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if path == preservePath {
+			continue
+		}
+		if pathContains(path, preservePath) {
+			if entry.IsDir() {
+				if err := removeAllExcept(path, preservePath); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove state path %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func pathContains(dir, path string) bool {
+	relative, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
 func (c *Config) DBPath() string        { return filepath.Join(c.Paths.StateDir, "loom.db") }
 func (c *Config) ImageDir() string      { return filepath.Join(c.Paths.StateDir, "images") }
 func (c *Config) DaemonLogPath() string { return filepath.Join(c.Paths.StateDir, "daemon.log") }

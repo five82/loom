@@ -48,7 +48,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(
 		newStartCommand(), newStopCommand(), newRestartCommand(), newStatusCommand(),
 		newScanCommand(), newUnmatchedCommand(), newSearchCommand(), newMatchCommand(),
-		newLogsCommand(), newConfigCommand(), newDaemonCommand(),
+		newLogsCommand(), newConfigCommand(), newDeveloperCommand(), newDaemonCommand(),
 	)
 	return root
 }
@@ -406,6 +406,31 @@ func newConfigCommand() *cobra.Command {
 			},
 		},
 	)
+	return command
+}
+
+func newDeveloperCommand() *cobra.Command {
+	command := &cobra.Command{Use: "developer", Short: "Developer utilities"}
+	command.AddCommand(&cobra.Command{
+		Use:   "reset",
+		Short: "Erase Loom state while preserving config.toml",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			if daemonctl.IsRunning(cfg.LockPath(), cfg.SocketPath()) {
+				if err := daemonctl.Stop(cfg.LockPath(), cfg.SocketPath()); err != nil {
+					return err
+				}
+			}
+			if err := cfg.ResetState(); err != nil {
+				return err
+			}
+			fmt.Println("Loom reset")
+			return nil
+		},
+	})
 	return command
 }
 
