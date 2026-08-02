@@ -79,7 +79,7 @@ func TestCatalogAndProgress(t *testing.T) {
 	}
 }
 
-func TestEpisodeInheritsShowImages(t *testing.T) {
+func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
 	if err != nil {
@@ -135,6 +135,30 @@ func TestEpisodeInheritsShowImages(t *testing.T) {
 		if item.PosterImageID != posterID || item.PosterImageTag != "poster-tag" {
 			t.Fatalf("item %d poster = %d/%q, want inherited %d/poster-tag", id,
 				item.PosterImageID, item.PosterImageTag, posterID)
+		}
+		if item.LogoImageID != logoID || item.LogoImageTag != "logo-tag" {
+			t.Fatalf("item %d logo = %d/%q, want inherited %d/logo-tag", id,
+				item.LogoImageID, item.LogoImageTag, logoID)
+		}
+	}
+
+	seasonPosterID, err := catalog.UpsertImage(ctx, Image{
+		ItemID: seasonID, Kind: "poster", Path: "/images/season-poster.jpg",
+		SourceURL: "https://example/season-poster.jpg", Provider: "tmdb",
+		ProviderPath: "/season-poster.jpg", Tag: "season-poster-tag",
+		ContentType: "image/jpeg", Width: 200, Height: 300, UpdatedAt: now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{seasonID, episodeID} {
+		item, err := catalog.Item(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if item.PosterImageID != seasonPosterID || item.PosterImageTag != "season-poster-tag" {
+			t.Fatalf("item %d poster = %d/%q, want season poster %d/season-poster-tag", id,
+				item.PosterImageID, item.PosterImageTag, seasonPosterID)
 		}
 		if item.LogoImageID != logoID || item.LogoImageTag != "logo-tag" {
 			t.Fatalf("item %d logo = %d/%q, want inherited %d/logo-tag", id,

@@ -179,6 +179,155 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 }
 
+func TestTVSeasonPosterArtwork(t *testing.T) {
+	defaultImage := encodedPNG(t, color.RGBA{R: 255, A: 255})
+	alternateImage := encodedPNG(t, color.RGBA{B: 255, A: 255})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tv/100", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":100,"name":"Show"}`)
+	})
+	mux.HandleFunc("/tv/200", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":200,"name":"Other Show"}`)
+	})
+	for _, id := range []string{"100", "200"} {
+		mux.HandleFunc("/tv/"+id+"/images", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `{"posters":[],"backdrops":[],"logos":[]}`)
+		})
+	}
+	mux.HandleFunc("/tv/100/season/1", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":1001,"poster_path":"/season.jpg","episodes":[{"id":101,"episode_number":1,"name":"Pilot","overview":"First episode","air_date":"2020-01-01"}]}`)
+	})
+	mux.HandleFunc("/tv/200/season/1", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":2001,"poster_path":"/other-season.jpg","episodes":[{"id":201,"episode_number":1,"name":"New Pilot"}]}`)
+	})
+	mux.HandleFunc("/tv/100/season/1/images", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/season.jpg","width":2,"height":3},{"file_path":"/alternate-season.jpg","width":2,"height":3}]}`)
+	})
+	mux.HandleFunc("/tv/200/season/1/images", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/other-season.jpg","width":2,"height":3}]}`)
+	})
+	mux.HandleFunc("/images/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/alternate-season.jpg") {
+			_, _ = w.Write(alternateImage)
+			return
+		}
+		_, _ = w.Write(defaultImage)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	catalog, err := store.Open(filepath.Join(root, "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, SourceKey: "show:Show", Kind: "show", Title: "Show", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seasonID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, ParentID: &showID, SourceKey: "show:Show:season:1",
+		Kind: "season", Title: "Season 1", SeasonNumber: 1, ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	episodeID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, ParentID: &seasonID, SourceKey: "file:Show/S01E01.mkv",
+		Kind: "episode", Title: "Episode 1", SeasonNumber: 1, EpisodeNumber: 1, ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := tmdb.NewWithURLs("key", "en-US", server.URL, server.URL+"/images", server.Client())
+	service := New(catalog, client, filepath.Join(root, "images"), slog.Default())
+
+	if err := service.Match(ctx, showID, 100); err != nil {
+		t.Fatal(err)
+	}
+	poster, err := catalog.ItemImage(ctx, seasonID, "poster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if poster.ProviderPath != "/season.jpg" || poster.ManuallySelected {
+		t.Fatalf("default season poster = %+v", poster)
+	}
+	episode, err := catalog.Item(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.Title != "Pilot" || episode.PosterImageID != poster.ID {
+		t.Fatalf("episode metadata and inherited poster = %+v", episode)
+	}
+	options, err := service.ImageOptions(ctx, seasonID, "poster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options) != 2 || !options[0].Selected || !strings.Contains(options[0].ThumbnailURL, "/w342/") {
+		t.Fatalf("season poster options = %+v", options)
+	}
+	selected, err := service.SelectImage(ctx, seasonID, "poster", "tmdb", "/alternate-season.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected.ManuallySelected || selected.ProviderPath != "/alternate-season.jpg" {
+		t.Fatalf("selected season poster = %+v", selected)
+	}
+	if err := service.Match(ctx, showID, 100); err != nil {
+		t.Fatal(err)
+	}
+	preserved, err := catalog.ItemImage(ctx, seasonID, "poster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preserved.ManuallySelected || preserved.ProviderPath != "/alternate-season.jpg" {
+		t.Fatalf("manual season poster was not preserved: %+v", preserved)
+	}
+	reset, err := service.ResetImage(ctx, seasonID, "poster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.ManuallySelected || reset.ProviderPath != "/season.jpg" {
+		t.Fatalf("reset season poster = %+v", reset)
+	}
+
+	if _, err := service.SelectImage(ctx, seasonID, "poster", "tmdb", "/alternate-season.jpg"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Match(ctx, showID, 200); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := catalog.ItemImage(ctx, seasonID, "poster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.ManuallySelected || replaced.ProviderPath != "/other-season.jpg" {
+		t.Fatalf("season poster survived show identity change: %+v", replaced)
+	}
+
+	if err := catalog.DeleteItemImage(ctx, seasonID, "poster"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.AutoMatch(ctx, showID); err != nil {
+		t.Fatal(err)
+	}
+	backfilled, err := catalog.ItemImage(ctx, seasonID, "poster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backfilled.ProviderPath != "/other-season.jpg" {
+		t.Fatalf("backfilled season poster = %+v", backfilled)
+	}
+}
+
 func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	imageBytes := encodedPNG(t, color.RGBA{R: 255, G: 255, A: 255})
 	var searchRequests, detailRequests, imageRequests atomic.Int32

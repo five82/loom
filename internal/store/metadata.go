@@ -35,6 +35,26 @@ WHERE id = ? AND available = 1`, metadata.TMDBID, metadata.Title, metadata.Title
 	return nil
 }
 
+func (s *Store) SeasonsForShow(ctx context.Context, showID int64) ([]Item, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`
+FROM items i
+WHERE i.parent_id = ? AND i.available = 1 AND i.kind = 'season'
+ORDER BY i.season_number`, showID)
+	if err != nil {
+		return nil, fmt.Errorf("list show seasons: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var items []Item
+	for rows.Next() {
+		item, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) EpisodesForShow(ctx context.Context, showID int64) ([]Item, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`
 FROM items i JOIN items season ON season.id = i.parent_id

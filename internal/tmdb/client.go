@@ -135,9 +135,17 @@ type Episode struct {
 	StillPath   string
 }
 
-func (c *Client) Season(ctx context.Context, showID int64, season int) ([]Episode, error) {
+type Season struct {
+	ID         int64
+	PosterPath string
+	Episodes   []Episode
+}
+
+func (c *Client) Season(ctx context.Context, showID int64, season int) (Season, error) {
 	var response struct {
-		Episodes []struct {
+		ID         int64  `json:"id"`
+		PosterPath string `json:"poster_path"`
+		Episodes   []struct {
 			ID            int64  `json:"id"`
 			EpisodeNumber int    `json:"episode_number"`
 			Name          string `json:"name"`
@@ -148,7 +156,7 @@ func (c *Client) Season(ctx context.Context, showID int64, season int) ([]Episod
 	}
 	path := "/tv/" + strconv.FormatInt(showID, 10) + "/season/" + strconv.Itoa(season)
 	if err := c.get(ctx, path, nil, &response); err != nil {
-		return nil, err
+		return Season{}, err
 	}
 	episodes := make([]Episode, 0, len(response.Episodes))
 	for _, raw := range response.Episodes {
@@ -157,7 +165,7 @@ func (c *Client) Season(ctx context.Context, showID int64, season int) ([]Episod
 			ReleaseDate: raw.AirDate, StillPath: raw.StillPath,
 		})
 	}
-	return episodes, nil
+	return Season{ID: response.ID, PosterPath: response.PosterPath, Episodes: episodes}, nil
 }
 
 type ImageCandidate struct {
@@ -180,14 +188,7 @@ func (c *Client) Images(ctx context.Context, mediaType string, id int64) (Images
 	if mediaType != "movie" && mediaType != "tv" {
 		return Images{}, fmt.Errorf("unsupported TMDB media type %q", mediaType)
 	}
-	values := url.Values{}
-	language := c.language
-	if before, _, found := strings.Cut(language, "-"); found {
-		language = before
-	}
-	if language != "" {
-		values.Set("include_image_language", language+",null")
-	}
+	values := c.imageLanguages()
 	var response struct {
 		Posters   []ImageCandidate `json:"posters"`
 		Backdrops []ImageCandidate `json:"backdrops"`
@@ -200,6 +201,29 @@ func (c *Client) Images(ctx context.Context, mediaType string, id int64) (Images
 	return Images{
 		Posters: response.Posters, Backdrops: response.Backdrops, Logos: response.Logos,
 	}, nil
+}
+
+func (c *Client) SeasonImages(ctx context.Context, showID int64, season int) ([]ImageCandidate, error) {
+	var response struct {
+		Posters []ImageCandidate `json:"posters"`
+	}
+	path := "/tv/" + strconv.FormatInt(showID, 10) + "/season/" + strconv.Itoa(season) + "/images"
+	if err := c.get(ctx, path, c.imageLanguages(), &response); err != nil {
+		return nil, err
+	}
+	return response.Posters, nil
+}
+
+func (c *Client) imageLanguages() url.Values {
+	values := url.Values{}
+	language := c.language
+	if before, _, found := strings.Cut(language, "-"); found {
+		language = before
+	}
+	if language != "" {
+		values.Set("include_image_language", language+",null")
+	}
+	return values
 }
 
 func (c *Client) ImageURL(path string) string {

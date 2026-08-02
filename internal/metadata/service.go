@@ -111,6 +111,29 @@ func (s *Service) backfillImages(ctx context.Context, item *store.Item) error {
 			s.saveDefaultImage(ctx, item.ID, "logo", images.Logos[0].FilePath)
 		}
 	}
+	if item.Kind == "show" {
+		return s.backfillSeasonPosters(ctx, item.ID, item.TMDBID)
+	}
+	return nil
+}
+
+func (s *Service) backfillSeasonPosters(ctx context.Context, showID, tmdbID int64) error {
+	seasons, err := s.store.SeasonsForShow(ctx, showID)
+	if err != nil {
+		return err
+	}
+	for _, season := range seasons {
+		if _, err := s.store.ItemImage(ctx, season.ID, "poster"); err == nil {
+			continue
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		details, err := s.tmdb.Season(ctx, tmdbID, season.SeasonNumber)
+		if err != nil {
+			return err
+		}
+		s.saveDefaultImage(ctx, season.ID, "poster", details.PosterPath)
+	}
 	return nil
 }
 
@@ -140,6 +163,9 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 		for _, kind := range []string{"poster", "backdrop", "logo"} {
 			s.clearImage(ctx, itemID, kind)
 		}
+		if item.Kind == "show" {
+			s.clearSeasonPosters(ctx, itemID)
+		}
 	}
 	s.saveDefaultImage(ctx, itemID, "poster", details.PosterPath)
 	s.saveDefaultImage(ctx, itemID, "backdrop", details.BackdropPath)
@@ -165,15 +191,24 @@ type ImageOption struct {
 }
 
 func (s *Service) ImageOptions(ctx context.Context, itemID int64, kind string) ([]ImageOption, error) {
-	item, err := s.imageItem(ctx, itemID, kind)
+	item, provider, err := s.imageItem(ctx, itemID, kind)
 	if err != nil {
 		return nil, err
 	}
-	images, err := s.tmdb.Images(ctx, metadataType(item.Kind), item.TMDBID)
+	var candidates []tmdb.ImageCandidate
+	thumbnailSize := "w342"
+	if item.Kind == "season" {
+		candidates, err = s.tmdb.SeasonImages(ctx, provider.TMDBID, item.SeasonNumber)
+	} else {
+		var images tmdb.Images
+		images, err = s.tmdb.Images(ctx, metadataType(item.Kind), item.TMDBID)
+		if err == nil {
+			candidates, thumbnailSize = imageCandidates(images, kind)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	candidates, thumbnailSize := imageCandidates(images, kind)
 	current, err := s.store.ItemImage(ctx, itemID, kind)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
@@ -215,12 +250,18 @@ func (s *Service) SelectImage(
 }
 
 func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*store.Image, error) {
-	item, err := s.imageItem(ctx, itemID, kind)
+	item, provider, err := s.imageItem(ctx, itemID, kind)
 	if err != nil {
 		return nil, err
 	}
 	providerPath := ""
-	if kind == "logo" {
+	if item.Kind == "season" {
+		details, err := s.tmdb.Season(ctx, provider.TMDBID, item.SeasonNumber)
+		if err != nil {
+			return nil, err
+		}
+		providerPath = details.PosterPath
+	} else if kind == "logo" {
 		images, err := s.tmdb.Images(ctx, metadataType(item.Kind), item.TMDBID)
 		if err != nil {
 			return nil, err
@@ -249,21 +290,33 @@ func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*s
 	return reset, err
 }
 
-func (s *Service) imageItem(ctx context.Context, itemID int64, kind string) (*store.Item, error) {
+func (s *Service) imageItem(ctx context.Context, itemID int64, kind string) (*store.Item, *store.Item, error) {
 	if kind != "poster" && kind != "backdrop" && kind != "logo" {
-		return nil, fmt.Errorf("%w: unsupported image kind %q", ErrImageUnavailable, kind)
+		return nil, nil, fmt.Errorf("%w: unsupported image kind %q", ErrImageUnavailable, kind)
 	}
 	item, err := s.store.Item(ctx, itemID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if item.Kind != "movie" && item.Kind != "show" {
-		return nil, fmt.Errorf("%w: item %d is %s; images can only be selected for movies and shows", ErrImageUnavailable, itemID, item.Kind)
+	provider := item
+	if item.Kind == "season" {
+		if kind != "poster" {
+			return nil, nil, fmt.Errorf("%w: seasons only support poster selection", ErrImageUnavailable)
+		}
+		if item.ParentID == nil {
+			return nil, nil, fmt.Errorf("%w: season %d does not have a parent show", ErrImageUnavailable, itemID)
+		}
+		provider, err = s.store.Item(ctx, *item.ParentID)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else if item.Kind != "movie" && item.Kind != "show" {
+		return nil, nil, fmt.Errorf("%w: item %d is %s; images cannot be selected", ErrImageUnavailable, itemID, item.Kind)
 	}
-	if item.TMDBID == 0 {
-		return nil, fmt.Errorf("%w: item %d does not have a TMDB match", ErrImageUnavailable, itemID)
+	if provider.TMDBID == 0 {
+		return nil, nil, fmt.Errorf("%w: item %d does not have a TMDB match", ErrImageUnavailable, itemID)
 	}
-	return item, nil
+	return item, provider, nil
 }
 
 func (s *Service) saveDefaultImage(ctx context.Context, itemID int64, kind, providerPath string) {
@@ -294,6 +347,17 @@ func imageCandidates(images tmdb.Images, kind string) ([]tmdb.ImageCandidate, st
 		return images.Logos, "w300"
 	default:
 		return images.Posters, "w342"
+	}
+}
+
+func (s *Service) clearSeasonPosters(ctx context.Context, showID int64) {
+	seasons, err := s.store.SeasonsForShow(ctx, showID)
+	if err != nil {
+		s.logger.Warn("season posters not cleared", "show_id", showID, "error", err)
+		return
+	}
+	for _, season := range seasons {
+		s.clearImage(ctx, season.ID, "poster")
 	}
 }
 
@@ -418,14 +482,17 @@ func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64) {
 		bySeason[episode.SeasonNumber] = append(bySeason[episode.SeasonNumber], episode)
 	}
 	for seasonNumber, items := range bySeason {
-		episodes, err := s.tmdb.Season(ctx, tmdbID, seasonNumber)
+		season, err := s.tmdb.Season(ctx, tmdbID, seasonNumber)
 		if err != nil {
 			s.logger.Warn("TMDB season metadata unavailable", "show_id", showID,
 				"season", seasonNumber, "error", err)
 			continue
 		}
-		byNumber := make(map[int]tmdb.Episode, len(episodes))
-		for _, episode := range episodes {
+		if items[0].ParentID != nil {
+			s.saveDefaultImage(ctx, *items[0].ParentID, "poster", season.PosterPath)
+		}
+		byNumber := make(map[int]tmdb.Episode, len(season.Episodes))
+		for _, episode := range season.Episodes {
 			byNumber[episode.Number] = episode
 		}
 		for _, item := range items {

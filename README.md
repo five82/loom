@@ -92,7 +92,8 @@ loom scan tv
 Only one manual or scheduled scan runs at a time. Scans are incremental:
 unchanged files are not probed again. New movies and shows are automatically
 matched only when TMDB returns one unambiguous title/year match. Scans also
-backfill missing poster, backdrop, and logo artwork for existing TMDB matches.
+backfill missing poster, backdrop, logo, and TV season poster artwork for
+existing TMDB matches.
 
 Review and correct uncertain matches from the CLI:
 
@@ -105,11 +106,13 @@ loom match ITEM_ID TMDB_ID
 
 A match stores provider metadata in SQLite and downloads the default poster,
 backdrop, and TMDB's preferred logo into Loom's state directory when they are
-available. TV matches also populate metadata for local `SxxEyy` episodes.
-Clients can browse TMDB poster, backdrop, and logo options, select another
-image, or reset the selection to TMDB's default or preferred option. Manual
-choices survive metadata refreshes and are reset only when the item is matched
-to a different TMDB title. Loom never writes artwork into the media libraries.
+available. TV matches also populate metadata for local `SxxEyy` episodes and
+download season posters. Clients can browse TMDB poster, backdrop, and logo
+options, select another image, or reset the selection to TMDB's default or
+preferred option. Season items support the same selection flow for posters.
+Manual choices survive metadata refreshes and are reset only when the item is
+matched to a different TMDB title. Loom never writes artwork into the media
+libraries.
 
 ## Library conventions
 
@@ -180,9 +183,11 @@ Select one of the provider paths returned by the image-options endpoint:
 
 Items expose poster, backdrop, and logo image IDs with content tags. Clients
 should include the tag query parameter when fetching an image; tagged responses
-are immutable and a changed selection produces a new tag. Seasons and episodes
-inherit their show's images unless they receive their own image support later.
-Image selection is unauthenticated under Loom's trusted-LAN model.
+are immutable and a changed selection produces a new tag. Seasons use their
+TMDB season poster when available and otherwise inherit the show poster.
+Episodes inherit the season poster; season and episode backdrops and logos
+inherit from the show. Image selection is unauthenticated under
+Loom's trusted-LAN model.
 
 Progress requests use milliseconds:
 
