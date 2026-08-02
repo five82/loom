@@ -35,7 +35,7 @@ The default configuration is:
 
 ```toml
 [api]
-bind = "0.0.0.0:8096"
+bind = "0.0.0.0:8097"
 
 [paths]
 state_dir = "~/.local/state/loom"

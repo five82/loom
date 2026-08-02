@@ -60,6 +60,13 @@ func TestLoadRejectsUnknownField(t *testing.T) {
 	}
 }
 
+func TestDefaultAPIDoesNotConflictWithJellyfin(t *testing.T) {
+	cfg := defaultConfig()
+	if cfg.API.Bind != "0.0.0.0:8097" {
+		t.Fatalf("default API bind = %q, want Loom port 8097", cfg.API.Bind)
+	}
+}
+
 func TestScanIntervalCanBeDisabled(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Scanner.Interval = "0"

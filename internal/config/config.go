@@ -48,7 +48,7 @@ func defaultConfig() *Config {
 		home = "/"
 	}
 	return &Config{
-		API: APIConfig{Bind: "0.0.0.0:8096"},
+		API: APIConfig{Bind: "0.0.0.0:8097"},
 		Paths: PathsConfig{
 			StateDir: filepath.Join(home, ".local", "state", "loom"),
 		},
