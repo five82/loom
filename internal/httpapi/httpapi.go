@@ -31,6 +31,7 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	}
 	api.public.HandleFunc("GET /api/v1/health", api.health)
 	api.public.HandleFunc("GET /api/v1/libraries", api.libraries)
+	api.public.HandleFunc("GET /api/v1/genres", api.genres)
 	api.public.HandleFunc("GET /api/v1/items", api.items)
 	api.public.HandleFunc("GET /api/v1/items/{id}", api.item)
 	api.public.HandleFunc("GET /api/v1/items/{id}/children", api.children)
@@ -74,6 +75,15 @@ func (a *API) libraries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": libraries})
 }
 
+func (a *API) genres(w http.ResponseWriter, r *http.Request) {
+	genres, err := a.store.Genres(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": genres})
+}
+
 func (a *API) items(w http.ResponseWriter, r *http.Request) {
 	libraryKind := r.URL.Query().Get("library")
 	if libraryKind != "" && libraryKind != "movies" && libraryKind != "tv" {
@@ -87,6 +97,14 @@ func (a *API) items(w http.ResponseWriter, r *http.Request) {
 	}
 	opts := store.ListOptions{
 		LibraryKind: libraryKind, Kind: r.URL.Query().Get("kind"), Limit: limit, Offset: offset,
+	}
+	if genre := r.URL.Query().Get("genre_id"); genre != "" {
+		id, err := strconv.ParseInt(genre, 10, 64)
+		if err != nil || id <= 0 {
+			writeError(w, http.StatusBadRequest, "genre_id must be a positive integer")
+			return
+		}
+		opts.GenreID = id
 	}
 	if parent := r.URL.Query().Get("parent_id"); parent != "" {
 		id, err := strconv.ParseInt(parent, 10, 64)

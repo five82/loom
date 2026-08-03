@@ -96,6 +96,61 @@ func TestItemTechnicalMetadata(t *testing.T) {
 	}
 }
 
+func TestMovieGenreAPI(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	if err := catalog.UpdateMetadata(context.Background(), itemID, store.MetadataUpdate{
+		TMDBID: 10, Title: "Movie", GenresLoaded: true,
+		Genres: []store.Genre{{ID: 878, Name: "Science Fiction"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/api/v1/genres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var genres struct {
+		Items []store.GenreSummary `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&genres); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(genres.Items) != 1 ||
+		genres.Items[0].ID != 878 || genres.Items[0].ItemCount != 1 {
+		t.Fatalf("genres status=%d items=%+v", response.StatusCode, genres.Items)
+	}
+
+	response, err = http.Get(server.URL + "/api/v1/items?library=movies&genre_id=878")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items struct {
+		Items []store.Item `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&items); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(items.Items) != 1 ||
+		len(items.Items[0].Genres) != 1 || items.Items[0].Genres[0].ID != 878 {
+		t.Fatalf("genre items status=%d items=%+v", response.StatusCode, items.Items)
+	}
+
+	response, err = http.Get(server.URL + "/api/v1/items?genre_id=invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid genre status=%d", response.StatusCode)
+	}
+}
+
 func TestImageSelectionAPI(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()

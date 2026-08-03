@@ -30,7 +30,7 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"results":[{"id":329865,"title":"Arrival","release_date":"2016-11-10","vote_average":7.6,"vote_count":19608},{"id":472349,"title":"Arrival","release_date":"2016-05-25","vote_average":4.9,"vote_count":8}]}`)
 	})
 	mux.HandleFunc("/movie/329865", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"id":329865,"title":"Arrival","overview":"A linguist meets visitors.","release_date":"2016-11-10","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg"}`)
+		_, _ = fmt.Fprint(w, `{"id":329865,"title":"Arrival","overview":"A linguist meets visitors.","release_date":"2016-11-10","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg","genres":[{"id":18,"name":"Drama"},{"id":878,"name":"Science Fiction"}]}`)
 	})
 	mux.HandleFunc("/movie/22", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"id":22,"title":"Different Movie"}`)
@@ -80,7 +80,8 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 	if item.TMDBID != 329865 || item.Overview == "" || item.PosterImageID == 0 ||
 		item.BackdropImageID == 0 || item.LogoImageID == 0 || item.PosterImageTag == "" ||
-		item.LogoImageTag == "" {
+		item.LogoImageTag == "" || !item.GenresLoaded || len(item.Genres) != 2 ||
+		item.Genres[1].ID != 878 {
 		t.Fatalf("metadata not applied: %+v", item)
 	}
 	poster, err := catalog.Image(ctx, item.PosterImageID)
@@ -176,6 +177,13 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 	if _, err := catalog.ItemImage(ctx, itemID, "logo"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("logo survived identity change: %v", err)
+	}
+	rematched, err := catalog.Item(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rematched.GenresLoaded || len(rematched.Genres) != 0 {
+		t.Fatalf("genres survived identity change: %+v", rematched.Genres)
 	}
 }
 
@@ -386,7 +394,7 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	})
 	mux.HandleFunc("/movie/10", func(w http.ResponseWriter, _ *http.Request) {
 		detailRequests.Add(1)
-		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg"}`)
+		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie","poster_path":"/poster.jpg","backdrop_path":"/backdrop.jpg","genres":[{"id":53,"name":"Thriller"}]}`)
 	})
 	mux.HandleFunc("/movie/10/images", func(w http.ResponseWriter, _ *http.Request) {
 		imageRequests.Add(1)
@@ -428,8 +436,9 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if item.PosterImageID == 0 || item.BackdropImageID == 0 || item.LogoImageID == 0 {
-		t.Fatalf("artwork was not backfilled: %+v", item)
+	if item.PosterImageID == 0 || item.BackdropImageID == 0 || item.LogoImageID == 0 ||
+		!item.GenresLoaded || len(item.Genres) != 1 || item.Genres[0].ID != 53 {
+		t.Fatalf("metadata was not backfilled: %+v", item)
 	}
 	if searchRequests.Load() != 0 || detailRequests.Load() != 1 || imageRequests.Load() != 1 {
 		t.Fatalf("provider requests = search %d, details %d, images %d", searchRequests.Load(),

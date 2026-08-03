@@ -67,7 +67,18 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 		return nil
 	}
 	if item.TMDBID != 0 {
-		return s.backfillImages(ctx, item)
+		var details *tmdb.Details
+		if item.Kind == "movie" && !item.GenresLoaded {
+			loaded, err := s.tmdb.Details(ctx, "movie", item.TMDBID)
+			if err != nil {
+				return err
+			}
+			if err := s.store.UpdateGenres(ctx, item.ID, storeGenres(loaded.Genres)); err != nil {
+				return err
+			}
+			details = &loaded
+		}
+		return s.backfillImages(ctx, item, details)
 	}
 	mediaType := metadataType(item.Kind)
 	results, err := s.tmdb.Search(ctx, mediaType, item.Title, item.Year)
@@ -106,12 +117,15 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 	return s.Match(ctx, itemID, selected.ID)
 }
 
-func (s *Service) backfillImages(ctx context.Context, item *store.Item) error {
+func (s *Service) backfillImages(ctx context.Context, item *store.Item, details *tmdb.Details) error {
 	mediaType := metadataType(item.Kind)
 	if item.PosterImageID == 0 || item.BackdropImageID == 0 {
-		details, err := s.tmdb.Details(ctx, mediaType, item.TMDBID)
-		if err != nil {
-			return err
+		if details == nil {
+			loaded, err := s.tmdb.Details(ctx, mediaType, item.TMDBID)
+			if err != nil {
+				return err
+			}
+			details = &loaded
 		}
 		if item.PosterImageID == 0 {
 			s.saveDefaultImage(ctx, item.ID, "poster", details.PosterPath)
@@ -168,10 +182,15 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	if err != nil {
 		return err
 	}
-	if err := s.store.UpdateMetadata(ctx, itemID, store.MetadataUpdate{
+	update := store.MetadataUpdate{
 		TMDBID: details.ID, Title: details.Title, Year: details.Year,
 		Overview: details.Overview, ReleaseDate: details.ReleaseDate,
-	}); err != nil {
+	}
+	if item.Kind == "movie" {
+		update.Genres = storeGenres(details.Genres)
+		update.GenresLoaded = true
+	}
+	if err := s.store.UpdateMetadata(ctx, itemID, update); err != nil {
 		return err
 	}
 	identityChanged := item.TMDBID != 0 && item.TMDBID != details.ID
@@ -563,6 +582,14 @@ func combinedEpisodeMetadata(item store.Item, episodes map[int]tmdb.Episode) (st
 		TMDBID: first.ID, Title: strings.Join(titles, " / "), Overview: strings.Join(overviews, "\n\n"),
 		ReleaseDate: first.ReleaseDate,
 	}, true
+}
+
+func storeGenres(genres []tmdb.Genre) []store.Genre {
+	result := make([]store.Genre, len(genres))
+	for index, genre := range genres {
+		result[index] = store.Genre{ID: genre.ID, Name: genre.Name}
+	}
+	return result
 }
 
 func metadataType(kind string) string {

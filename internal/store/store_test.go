@@ -79,6 +79,92 @@ func TestCatalogAndProgress(t *testing.T) {
 	}
 }
 
+func TestMovieGenres(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrivalID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Arrival", Kind: "movie", Title: "Arrival", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alienID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Alien", Kind: "movie", Title: "Alien", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, genres := range map[int64][]Genre{
+		arrivalID: {{ID: 18, Name: "Drama"}, {ID: 878, Name: "Science Fiction"}},
+		alienID:   {{ID: 878, Name: "Science Fiction"}},
+	} {
+		if err := catalog.UpdateMetadata(ctx, id, MetadataUpdate{
+			TMDBID: id, Genres: genres, GenresLoaded: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 2, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	genres, err := catalog.Genres(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(genres) != 2 || genres[0].Name != "Drama" || genres[0].ItemCount != 1 ||
+		genres[1].ID != 878 || genres[1].ItemCount != 2 {
+		t.Fatalf("genre summaries = %+v", genres)
+	}
+	items, err := catalog.ListItems(ctx, ListOptions{LibraryKind: "movies", TopLevel: true, GenreID: 18})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != arrivalID || len(items[0].Genres) != 2 || !items[0].GenresLoaded {
+		t.Fatalf("drama movies = %+v", items)
+	}
+
+	if err := catalog.UpdateGenres(ctx, arrivalID, []Genre{{ID: 53, Name: "Thriller"}}); err != nil {
+		t.Fatal(err)
+	}
+	item, err := catalog.Item(ctx, arrivalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.Genres) != 1 || item.Genres[0].ID != 53 {
+		t.Fatalf("replaced movie genres = %+v", item.Genres)
+	}
+
+	_, nextScanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Arrival", Kind: "movie", Title: "Arrival", ScanID: nextScanID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, nextScanID, 1, 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	genres, err = catalog.Genres(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(genres) != 1 || genres[0].ID != 53 || genres[0].ItemCount != 1 {
+		t.Fatalf("available genre summaries = %+v", genres)
+	}
+}
+
 func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
@@ -241,7 +327,7 @@ FROM media_files JOIN media_streams ON media_streams.media_file_id = media_files
 WHERE media_files.id = 4`).Scan(&mtime, &profile, &channelLayout, &dynamicRange); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 || provider != "tmdb" || tag != "legacy-7" || manuallySelected ||
+	if version != 5 || provider != "tmdb" || tag != "legacy-7" || manuallySelected ||
 		mtime != -1 || profile != "" || channelLayout != "" || dynamicRange != "" {
 		t.Fatalf("migration result = version %d, provider %q, tag %q, manual %v, "+
 			"mtime %d, profile %q, layout %q, range %q", version, provider, tag,

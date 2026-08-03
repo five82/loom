@@ -7,21 +7,55 @@ import (
 	"fmt"
 )
 
+type Genre struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
 // MetadataUpdate applies provider-owned fields to one catalog item.
 type MetadataUpdate struct {
-	TMDBID      int64
-	Title       string
-	Year        int
-	Overview    string
-	ReleaseDate string
+	TMDBID       int64
+	Title        string
+	Year         int
+	Overview     string
+	ReleaseDate  string
+	Genres       []Genre
+	GenresLoaded bool
+}
+
+type contextExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 func (s *Store) UpdateMetadata(ctx context.Context, itemID int64, metadata MetadataUpdate) error {
-	result, err := s.db.ExecContext(ctx, `
+	if !metadata.GenresLoaded {
+		return updateMetadata(ctx, s.db, itemID, metadata)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("update metadata transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := updateMetadata(ctx, tx, itemID, metadata); err != nil {
+		return err
+	}
+	if err := replaceGenres(ctx, tx, itemID, metadata.Genres); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit metadata update: %w", err)
+	}
+	return nil
+}
+
+func updateMetadata(ctx context.Context, db contextExecer, itemID int64, metadata MetadataUpdate) error {
+	result, err := db.ExecContext(ctx, `
 UPDATE items SET tmdb_id = ?, title = CASE WHEN ? = '' THEN title ELSE ? END,
-    year = CASE WHEN ? = 0 THEN year ELSE ? END, overview = ?, release_date = ?, updated_at = ?
+    year = CASE WHEN ? = 0 THEN year ELSE ? END, overview = ?, release_date = ?,
+    genres_loaded = CASE WHEN ? THEN 1 ELSE genres_loaded END, updated_at = ?
 WHERE id = ? AND available = 1`, metadata.TMDBID, metadata.Title, metadata.Title,
-		metadata.Year, metadata.Year, metadata.Overview, metadata.ReleaseDate, now(), itemID)
+		metadata.Year, metadata.Year, metadata.Overview, metadata.ReleaseDate,
+		metadata.GenresLoaded, now(), itemID)
 	if err != nil {
 		return fmt.Errorf("update item metadata: %w", err)
 	}
@@ -33,6 +67,82 @@ WHERE id = ? AND available = 1`, metadata.TMDBID, metadata.Title, metadata.Title
 		return ErrNotFound
 	}
 	return nil
+}
+
+func (s *Store) UpdateGenres(ctx context.Context, itemID int64, genres []Genre) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("update genres transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+UPDATE items SET genres_loaded = 1, updated_at = ?
+WHERE id = ? AND available = 1 AND kind = 'movie'`, now(), itemID)
+	if err != nil {
+		return fmt.Errorf("mark movie genres loaded: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read updated genre item count: %w", err)
+	}
+	if count == 0 {
+		return ErrNotFound
+	}
+	if err := replaceGenres(ctx, tx, itemID, genres); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit genre update: %w", err)
+	}
+	return nil
+}
+
+func replaceGenres(ctx context.Context, tx *sql.Tx, itemID int64, genres []Genre) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_genres WHERE item_id = ?`, itemID); err != nil {
+		return fmt.Errorf("clear item genres: %w", err)
+	}
+	for _, genre := range genres {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO genres(id, name) VALUES (?, ?)
+ON CONFLICT(id) DO UPDATE SET name = excluded.name`, genre.ID, genre.Name); err != nil {
+			return fmt.Errorf("upsert genre %d: %w", genre.ID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO item_genres(item_id, genre_id) VALUES (?, ?)`, itemID, genre.ID); err != nil {
+			return fmt.Errorf("associate item genre %d: %w", genre.ID, err)
+		}
+	}
+	return nil
+}
+
+type GenreSummary struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	ItemCount int    `json:"item_count"`
+}
+
+func (s *Store) Genres(ctx context.Context) ([]GenreSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT g.id, g.name, COUNT(*)
+FROM genres g
+JOIN item_genres ig ON ig.genre_id = g.id
+JOIN items i ON i.id = ig.item_id
+WHERE i.available = 1 AND i.kind = 'movie'
+GROUP BY g.id, g.name
+ORDER BY g.name COLLATE NOCASE, g.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list genres: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var genres []GenreSummary
+	for rows.Next() {
+		var genre GenreSummary
+		if err := rows.Scan(&genre.ID, &genre.Name, &genre.ItemCount); err != nil {
+			return nil, fmt.Errorf("scan genre: %w", err)
+		}
+		genres = append(genres, genre)
+	}
+	return genres, rows.Err()
 }
 
 func (s *Store) SeasonsForShow(ctx context.Context, showID int64) ([]Item, error) {

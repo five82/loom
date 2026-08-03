@@ -104,6 +104,11 @@ func (c *Client) Search(ctx context.Context, mediaType, query string, year int) 
 	return results, nil
 }
 
+type Genre struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
 type Details struct {
 	ID           int64
 	Title        string
@@ -112,6 +117,7 @@ type Details struct {
 	Year         int
 	PosterPath   string
 	BackdropPath string
+	Genres       []Genre
 }
 
 func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Details, error) {
@@ -119,14 +125,15 @@ func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Detai
 		return Details{}, fmt.Errorf("unsupported TMDB media type %q", mediaType)
 	}
 	var raw struct {
-		ID           int64  `json:"id"`
-		Title        string `json:"title"`
-		Name         string `json:"name"`
-		Overview     string `json:"overview"`
-		ReleaseDate  string `json:"release_date"`
-		FirstAirDate string `json:"first_air_date"`
-		PosterPath   string `json:"poster_path"`
-		BackdropPath string `json:"backdrop_path"`
+		ID           int64   `json:"id"`
+		Title        string  `json:"title"`
+		Name         string  `json:"name"`
+		Overview     string  `json:"overview"`
+		ReleaseDate  string  `json:"release_date"`
+		FirstAirDate string  `json:"first_air_date"`
+		PosterPath   string  `json:"poster_path"`
+		BackdropPath string  `json:"backdrop_path"`
+		Genres       []Genre `json:"genres"`
 	}
 	if err := c.get(ctx, "/"+mediaType+"/"+strconv.FormatInt(id, 10), nil, &raw); err != nil {
 		return Details{}, err
@@ -138,6 +145,7 @@ func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Detai
 	return Details{
 		ID: raw.ID, Title: title, Overview: raw.Overview, ReleaseDate: date,
 		Year: dateYear(date), PosterPath: raw.PosterPath, BackdropPath: raw.BackdropPath,
+		Genres: raw.Genres,
 	}, nil
 }
 

@@ -116,10 +116,11 @@ loom search tv "Batman"
 loom match ITEM_ID TMDB_ID
 ```
 
-A match stores provider metadata in SQLite and downloads the default poster,
-backdrop, and TMDB's preferred logo into Loom's state directory when they are
-available. TV matches also populate metadata for local `SxxEyy` episodes and
-download season posters. Clients can browse TMDB poster, backdrop, and logo
+A match stores provider metadata, including movie genres, in SQLite and
+downloads the default poster, backdrop, and TMDB's preferred logo into Loom's
+state directory when they are available. TV matches also populate metadata for
+local `SxxEyy` episodes and download season posters. Clients can browse TMDB
+poster, backdrop, and logo
 options, select another image, or reset the selection to TMDB's default or
 preferred option. Season items support the same selection flow for posters.
 Manual choices survive metadata refreshes and are reset only when the item is
@@ -167,7 +168,9 @@ The unauthenticated LAN API is rooted at `/api/v1`:
 ```text
 GET  /api/v1/health
 GET  /api/v1/libraries
+GET  /api/v1/genres
 GET  /api/v1/items?library=movies
+GET  /api/v1/items?library=movies&genre_id=878
 GET  /api/v1/items/{id}
 GET  /api/v1/items/{id}/children
 GET  /api/v1/items/{id}/playback
@@ -192,6 +195,10 @@ Select one of the provider paths returned by the image-options endpoint:
   "provider_path": "/abc123.jpg"
 }
 ```
+
+The genres endpoint lists movie genres represented in the available catalog,
+including an item count. Movie items include their genres and can be filtered by
+TMDB genre ID.
 
 Items expose poster, backdrop, and logo image IDs with content tags. Clients
 should include the tag query parameter when fetching an image; tagged responses

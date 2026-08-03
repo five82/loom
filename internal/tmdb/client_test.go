@@ -8,6 +8,25 @@ import (
 	"testing"
 )
 
+func TestDetailsIncludesGenres(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/movie/10" {
+			t.Fatalf("unexpected details request: %s", r.URL.String())
+		}
+		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie","genres":[{"id":878,"name":"Science Fiction"}]}`)
+	}))
+	defer server.Close()
+
+	client := NewWithURLs("key", "en-US", server.URL, server.URL, server.Client())
+	details, err := client.Details(context.Background(), "movie", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details.Genres) != 1 || details.Genres[0].ID != 878 || details.Genres[0].Name != "Science Fiction" {
+		t.Fatalf("details genres = %+v", details.Genres)
+	}
+}
+
 func TestSearchIncludesCandidateVotes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/search/movie" || r.URL.Query().Get("year") != "1990" {

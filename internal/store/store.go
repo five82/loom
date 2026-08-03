@@ -54,8 +54,8 @@ func (s *Store) migrate() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version > 4 {
-		return fmt.Errorf("database schema version %d is newer than supported version 4", version)
+	if version > 5 {
+		return fmt.Errorf("database schema version %d is newer than supported version 5", version)
 	}
 	if version == 1 {
 		if err := s.migrateImagesV2(); err != nil {
@@ -70,9 +70,15 @@ func (s *Store) migrate() error {
 		version = 3
 	}
 	if version == 3 {
-		return s.migrateLogoImagesV4()
+		if err := s.migrateLogoImagesV4(); err != nil {
+			return err
+		}
+		version = 4
 	}
 	if version == 4 {
+		return s.migrateGenresV5()
+	}
+	if version == 5 {
 		return nil
 	}
 	const schema = `
@@ -108,6 +114,7 @@ CREATE TABLE items (
     tmdb_id INTEGER NOT NULL DEFAULT 0,
     overview TEXT NOT NULL DEFAULT '',
     release_date TEXT NOT NULL DEFAULT '',
+    genres_loaded INTEGER NOT NULL DEFAULT 0,
     available INTEGER NOT NULL DEFAULT 1,
     last_seen_scan_id INTEGER NOT NULL,
     added_at TEXT NOT NULL,
@@ -116,6 +123,16 @@ CREATE TABLE items (
 );
 CREATE INDEX items_parent_idx ON items(parent_id, available, title);
 CREATE INDEX items_library_idx ON items(library_id, available, kind);
+CREATE TABLE genres (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE item_genres (
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    genre_id INTEGER NOT NULL REFERENCES genres(id),
+    PRIMARY KEY (item_id, genre_id)
+);
+CREATE INDEX item_genres_genre_idx ON item_genres(genre_id, item_id);
 CREATE TABLE media_files (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL UNIQUE REFERENCES items(id) ON DELETE CASCADE,
@@ -168,7 +185,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -270,6 +287,35 @@ PRAGMA user_version = 4;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit logo image migration: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateGenresV5() error {
+	const migration = `
+ALTER TABLE items ADD COLUMN genres_loaded INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE genres (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE item_genres (
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    genre_id INTEGER NOT NULL REFERENCES genres(id),
+    PRIMARY KEY (item_id, genre_id)
+);
+CREATE INDEX item_genres_genre_idx ON item_genres(genre_id, item_id);
+PRAGMA user_version = 5;
+`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin genre migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(migration); err != nil {
+		return fmt.Errorf("migrate genres to schema version 5: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit genre migration: %w", err)
 	}
 	return nil
 }
@@ -547,6 +593,8 @@ type Item struct {
 	TMDBID           int64      `json:"tmdb_id,omitempty"`
 	Overview         string     `json:"overview,omitempty"`
 	ReleaseDate      string     `json:"release_date,omitempty"`
+	Genres           []Genre    `json:"genres,omitempty"`
+	GenresLoaded     bool       `json:"-"`
 	PosterImageID    int64      `json:"poster_image_id,omitempty"`
 	PosterImageTag   string     `json:"poster_image_tag,omitempty"`
 	BackdropImageID  int64      `json:"backdrop_image_id,omitempty"`
@@ -561,6 +609,7 @@ type Item struct {
 
 const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
     i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
+    i.genres_loaded,
     COALESCE(
         (SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'),
         (SELECT id FROM images WHERE item_id = CASE
@@ -602,6 +651,7 @@ type ListOptions struct {
 	ParentID    *int64
 	TopLevel    bool
 	Kind        string
+	GenreID     int64
 	Limit       int
 	Offset      int
 }
@@ -626,6 +676,10 @@ func (s *Store) ListItems(ctx context.Context, opts ListOptions) ([]Item, error)
 		clauses = append(clauses, "i.kind = ?")
 		args = append(args, opts.Kind)
 	}
+	if opts.GenreID > 0 {
+		clauses = append(clauses, "EXISTS (SELECT 1 FROM item_genres ig WHERE ig.item_id = i.id AND ig.genre_id = ?)")
+		args = append(args, opts.GenreID)
+	}
 	args = append(args, opts.Limit, opts.Offset)
 	query := `SELECT ` + itemColumns + `
 FROM items i JOIN libraries l ON l.id = i.library_id
@@ -646,7 +700,16 @@ LIMIT ? OFFSET ?`
 		}
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.populateGenres(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 type rowScanner interface {
@@ -658,7 +721,7 @@ func scanItem(row rowScanner) (Item, error) {
 	var parent sql.NullInt64
 	if err := row.Scan(&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title, &item.Year,
 		&item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber, &item.TMDBID,
-		&item.Overview, &item.ReleaseDate, &item.PosterImageID, &item.PosterImageTag,
+		&item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID, &item.PosterImageTag,
 		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
 		&item.LogoImageTag, &item.AddedAt, &item.UpdatedAt); err != nil {
 		return Item{}, fmt.Errorf("scan item: %w", err)
@@ -667,6 +730,40 @@ func scanItem(row rowScanner) (Item, error) {
 		item.ParentID = &parent.Int64
 	}
 	return item, nil
+}
+
+func (s *Store) populateGenres(ctx context.Context, items []Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+	indexes := make(map[int64]int, len(items))
+	args := make([]any, len(items))
+	placeholders := make([]string, len(items))
+	for index := range items {
+		indexes[items[index].ID] = index
+		args[index] = items[index].ID
+		placeholders[index] = "?"
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT ig.item_id, g.id, g.name
+FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
+WHERE ig.item_id IN (`+strings.Join(placeholders, ",")+`)
+ORDER BY ig.item_id, g.name COLLATE NOCASE, g.id`, args...)
+	if err != nil {
+		return fmt.Errorf("list item genres: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var itemID int64
+		var genre Genre
+		if err := rows.Scan(&itemID, &genre.ID, &genre.Name); err != nil {
+			return fmt.Errorf("scan item genre: %w", err)
+		}
+		if index, ok := indexes[itemID]; ok {
+			items[index].Genres = append(items[index].Genres, genre)
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Store) Item(ctx context.Context, id int64) (*Item, error) {
@@ -679,6 +776,11 @@ FROM items i WHERE i.id = ? AND i.available = 1`, id)
 	if err != nil {
 		return nil, err
 	}
+	items := []Item{item}
+	if err := s.populateGenres(ctx, items); err != nil {
+		return nil, err
+	}
+	item = items[0]
 	media, err := s.mediaForItem(ctx, id)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
@@ -854,7 +956,7 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 		var updated string
 		if err := rows.Scan(&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title,
 			&item.Year, &item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber,
-			&item.TMDBID, &item.Overview, &item.ReleaseDate, &item.PosterImageID,
+			&item.TMDBID, &item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID,
 			&item.PosterImageTag, &item.BackdropImageID, &item.BackdropImageTag,
 			&item.LogoImageID, &item.LogoImageTag, &item.AddedAt, &item.UpdatedAt,
 			&position, &duration, &played, &updated); err != nil {
@@ -866,7 +968,16 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 		item.Progress = makeProgress(position, duration, played, updated)
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.populateGenres(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Store) RecentlyAdded(ctx context.Context, limit int) ([]Item, error) {
@@ -888,7 +999,16 @@ ORDER BY i.added_at DESC, i.id DESC LIMIT ?`, limit)
 		}
 		result = append(result, item)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.populateGenres(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 type Stats struct {
