@@ -165,6 +165,98 @@ func TestMovieGenres(t *testing.T) {
 	}
 }
 
+func TestSearchItems(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	moviesID, moviesScanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	movieID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: moviesID, SourceKey: "Pilot", Kind: "movie", Title: "Pilot", ScanID: moviesScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, movieID, MetadataUpdate{
+		TMDBID: 1, GenresLoaded: true, Genres: []Genre{{ID: 18, Name: "Drama"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, moviesID, moviesScanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	tvID, tvScanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tvID, SourceKey: "show:Pilot Light", Kind: "show", Title: "Pilot Light", ScanID: tvScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seasonID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tvID, ParentID: &showID, SourceKey: "show:Pilot Light:season:1",
+		Kind: "season", Title: "Pilot Season", SeasonNumber: 1, ScanID: tvScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	episodeID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tvID, ParentID: &seasonID, SourceKey: "show:Pilot Light:S01E01",
+		Kind: "episode", Title: "The Pilot", SeasonNumber: 1, EpisodeNumber: 1, ScanID: tvScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tvID, ParentID: &showID, SourceKey: "show:Pilot Light:unmatched",
+		Kind: "unmatched", Title: "Pilot Recording", ScanID: tvScanID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, tvID, tvScanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := catalog.SearchItems(ctx, "PILOT", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 || results[0].ID != movieID || results[1].ID != showID ||
+		results[2].ID != episodeID {
+		t.Fatalf("search results = %+v", results)
+	}
+	if len(results[0].Genres) != 1 || results[0].Genres[0].Name != "Drama" {
+		t.Fatalf("movie search result genres = %+v", results[0].Genres)
+	}
+	if results[2].SeriesTitle != "Pilot Light" || results[2].SeasonTitle != "Pilot Season" {
+		t.Fatalf("episode search context = %+v", results[2])
+	}
+
+	results, err = catalog.SearchItems(ctx, "pilot", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != showID {
+		t.Fatalf("paginated search results = %+v", results)
+	}
+	results, err = catalog.SearchItems(ctx, "%", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("literal wildcard search results = %+v", results)
+	}
+}
+
 func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))

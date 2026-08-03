@@ -32,6 +32,7 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	api.public.HandleFunc("GET /api/v1/health", api.health)
 	api.public.HandleFunc("GET /api/v1/libraries", api.libraries)
 	api.public.HandleFunc("GET /api/v1/genres", api.genres)
+	api.public.HandleFunc("GET /api/v1/search", api.search)
 	api.public.HandleFunc("GET /api/v1/items", api.items)
 	api.public.HandleFunc("GET /api/v1/items/{id}", api.item)
 	api.public.HandleFunc("GET /api/v1/items/{id}/children", api.children)
@@ -82,6 +83,25 @@ func (a *API) genres(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": genres})
+}
+
+func (a *API) search(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "q must not be empty")
+		return
+	}
+	limit, offset, err := pagination(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items, err := a.store.SearchItems(r.Context(), query, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "offset": offset})
 }
 
 func (a *API) items(w http.ResponseWriter, r *http.Request) {

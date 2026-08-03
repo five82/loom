@@ -151,6 +151,41 @@ func TestMovieGenreAPI(t *testing.T) {
 	}
 }
 
+func TestSearchAPI(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/api/v1/search?q=mov&limit=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Items  []store.SearchResult `json:"items"`
+		Limit  int                  `json:"limit"`
+		Offset int                  `json:"offset"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(result.Items) != 1 ||
+		result.Items[0].ID != itemID || result.Limit != 1 || result.Offset != 0 {
+		t.Fatalf("search status=%d result=%+v", response.StatusCode, result)
+	}
+
+	response, err = http.Get(server.URL + "/api/v1/search?q=+")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty search status=%d", response.StatusCode)
+	}
+}
+
 func TestImageSelectionAPI(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()

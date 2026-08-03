@@ -656,6 +656,73 @@ type ListOptions struct {
 	Offset      int
 }
 
+// SearchResult includes the hierarchy needed to identify an episode outside its show.
+type SearchResult struct {
+	Item
+	SeriesTitle string `json:"series_title,omitempty"`
+	SeasonTitle string `json:"season_title,omitempty"`
+}
+
+func (s *Store) SearchItems(ctx context.Context, searchQuery string, limit, offset int) ([]SearchResult, error) {
+	searchQuery = strings.TrimSpace(searchQuery)
+	if searchQuery == "" {
+		return nil, fmt.Errorf("search query must not be empty")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`,
+    COALESCE(series.title, ''), COALESCE(season.title, '')
+FROM items i
+LEFT JOIN items season ON i.kind = 'episode' AND season.id = i.parent_id
+LEFT JOIN items series ON series.id = season.parent_id
+WHERE i.available = 1 AND i.kind IN ('movie', 'show', 'episode')
+    AND instr(lower(i.title), lower(?)) > 0
+ORDER BY CASE
+        WHEN i.title = ? COLLATE NOCASE THEN 0
+        WHEN substr(i.title, 1, length(?)) = ? COLLATE NOCASE THEN 1
+        ELSE 2
+    END,
+    i.title COLLATE NOCASE,
+    CASE i.kind WHEN 'movie' THEN 0 WHEN 'show' THEN 1 ELSE 2 END,
+    i.id
+LIMIT ? OFFSET ?`, searchQuery, searchQuery, searchQuery, searchQuery, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("search items: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var results []SearchResult
+	for rows.Next() {
+		var result SearchResult
+		item, err := scanItemFields(rows, &result.SeriesTitle, &result.SeasonTitle)
+		if err != nil {
+			return nil, err
+		}
+		result.Item = item
+		results = append(results, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	items := make([]Item, len(results))
+	for index := range results {
+		items[index] = results[index].Item
+	}
+	if err := s.populateGenres(ctx, items); err != nil {
+		return nil, err
+	}
+	for index := range results {
+		results[index].Item = items[index]
+	}
+	return results, nil
+}
+
 func (s *Store) ListItems(ctx context.Context, opts ListOptions) ([]Item, error) {
 	if opts.Limit <= 0 || opts.Limit > 200 {
 		opts.Limit = 50
@@ -717,13 +784,20 @@ type rowScanner interface {
 }
 
 func scanItem(row rowScanner) (Item, error) {
+	return scanItemFields(row)
+}
+
+func scanItemFields(row rowScanner, trailing ...any) (Item, error) {
 	var item Item
 	var parent sql.NullInt64
-	if err := row.Scan(&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title, &item.Year,
+	destinations := []any{
+		&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title, &item.Year,
 		&item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber, &item.TMDBID,
 		&item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID, &item.PosterImageTag,
 		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
-		&item.LogoImageTag, &item.AddedAt, &item.UpdatedAt); err != nil {
+		&item.LogoImageTag, &item.AddedAt, &item.UpdatedAt,
+	}
+	if err := row.Scan(append(destinations, trailing...)...); err != nil {
 		return Item{}, fmt.Errorf("scan item: %w", err)
 	}
 	if parent.Valid {

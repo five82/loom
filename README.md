@@ -169,6 +169,7 @@ The unauthenticated LAN API is rooted at `/api/v1`:
 GET  /api/v1/health
 GET  /api/v1/libraries
 GET  /api/v1/genres
+GET  /api/v1/search?q=pilot
 GET  /api/v1/items?library=movies
 GET  /api/v1/items?library=movies&genre_id=878
 GET  /api/v1/items/{id}
@@ -199,6 +200,11 @@ Select one of the provider paths returned by the image-options endpoint:
 The genres endpoint lists movie genres represented in the available catalog,
 including an item count. Movie items include their genres and can be filtered by
 TMDB genre ID.
+
+Search matches available movie, show, and episode titles case-insensitively.
+Exact and prefix matches are returned before other substring matches. Results
+support `limit` and `offset`; episode results include `series_title` and
+`season_title` for display outside their hierarchy.
 
 Items expose poster, backdrop, and logo image IDs with content tags. Clients
 should include the tag query parameter when fetching an image; tagged responses
