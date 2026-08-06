@@ -1,8 +1,8 @@
 # Loom
 
-Loom is a personal, single-user movie and TV media server. It catalogs media
-from read-only libraries and serves original files directly to clients. It does
-not transcode or remux media.
+Loom is a personal, single-user movie, short film, and TV media server. It
+catalogs media from read-only libraries and serves original files directly to
+clients. It does not transcode or remux media.
 
 The initial client will be an Android/Android TV application. Loom currently
 has no authentication, so it should only be used on a trusted LAN.
@@ -11,7 +11,7 @@ has no authentication, so it should only be used on a trusted LAN.
 
 - Linux
 - `ffprobe` available in `PATH`
-- Read access to the configured movie and TV libraries
+- Read access to the configured movie, short film, and TV libraries
 
 Build the Loom executable as a static binary with:
 
@@ -42,6 +42,7 @@ state_dir = "~/.local/state/loom"
 
 [library]
 movies_dir = "/media/daspool/media/content/movies"
+shorts_dir = "/media/daspool/media/content/shorts"
 tv_dir = "/media/daspool/media/content/tv"
 
 [scanner]
@@ -91,13 +92,15 @@ This stops the daemon if necessary and deletes everything under
 `paths.state_dir`, including the database, catalog, playback state, metadata,
 daemon logs, and downloaded artwork. Media libraries are not modified. The
 loaded `config.toml` is also preserved, even when it is stored inside the state
-directory.
+directory. Loom only opens the current catalog schema; after a schema change,
+use this reset command rather than maintaining migrations.
 
 For manual scans:
 
 ```bash
-loom scan            # movies, then TV
+loom scan            # movies, short films, then TV
 loom scan movies
+loom scan shorts
 loom scan tv
 ```
 
@@ -129,17 +132,21 @@ libraries.
 
 ## Library conventions
 
-A movie is one first-level directory containing exactly one video file directly
-inside it:
+Movies and short films use the same layout: one first-level directory containing
+exactly one video file directly inside it:
 
 ```text
 movies/
   Arrival (2016)/
     Arrival (2016).mkv
+shorts/
+  Presto (2008)/
+    Presto (2008).mkv
 ```
 
-Nested movie videos are ignored, including anything under `extras/` or
-`behindthescenes/`.
+Nested movie and short film videos are ignored, including anything under
+`extras/` or `behindthescenes/`. Short films use TMDB movie metadata while
+remaining a separate Loom library.
 
 TV show directories may be flat or contain season directories. Episode numbers
 come from the filename:
@@ -158,8 +165,7 @@ cataloged as unmatched.
 NFO files, local artwork, external subtitle files, and movie extras are ignored.
 Embedded stream details are reported from `ffprobe`, including video and audio
 codecs, resolution, HDR/Dolby Vision classification, audio channel layout, and
-subtitle tracks. Upgrading a catalog from an older schema causes the next
-library scan to re-probe existing media for newly supported stream details.
+subtitle tracks.
 
 ## HTTP API
 
@@ -171,6 +177,7 @@ GET  /api/v1/libraries
 GET  /api/v1/genres
 GET  /api/v1/search?q=pilot
 GET  /api/v1/items?library=movies
+GET  /api/v1/items?library=shorts
 GET  /api/v1/items?library=movies&genre_id=878
 GET  /api/v1/items/{id}
 GET  /api/v1/items/{id}/children
@@ -197,9 +204,9 @@ Select one of the provider paths returned by the image-options endpoint:
 }
 ```
 
-The genres endpoint lists movie genres represented in the available catalog,
-including an item count. Movie items include their genres and can be filtered by
-TMDB genre ID.
+The genres endpoint lists movie and short film genres represented in the
+available catalog, including an item count. Movie items include their genres and
+can be filtered by TMDB genre ID.
 
 Search matches available movie, show, and episode titles case-insensitively.
 Exact and prefix matches are returned before other substring matches. Results

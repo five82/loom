@@ -40,7 +40,7 @@ func main() {
 func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "loom",
-		Short:         "A direct-play movie and TV media server",
+		Short:         "A direct-play movie, short film, and TV media server",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -152,6 +152,7 @@ type daemonStatus struct {
 	} `json:"scan"`
 	Catalog struct {
 		Movies    int `json:"movies"`
+		Shorts    int `json:"shorts"`
 		Shows     int `json:"shows"`
 		Episodes  int `json:"episodes"`
 		Unmatched int `json:"unmatched"`
@@ -192,9 +193,9 @@ func newStatusCommand() *cobra.Command {
 			} else {
 				fmt.Println("Scan: idle")
 			}
-			fmt.Printf("Catalog: %d movies, %d shows, %d episodes, %d unmatched, %d media files\n",
-				status.Catalog.Movies, status.Catalog.Shows, status.Catalog.Episodes,
-				status.Catalog.Unmatched, status.Catalog.Media)
+			fmt.Printf("Catalog: %d movies, %d shorts, %d shows, %d episodes, %d unmatched, %d media files\n",
+				status.Catalog.Movies, status.Catalog.Shorts, status.Catalog.Shows,
+				status.Catalog.Episodes, status.Catalog.Unmatched, status.Catalog.Media)
 			return nil
 		},
 	}
@@ -204,7 +205,7 @@ func newStatusCommand() *cobra.Command {
 
 func newScanCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "scan [movies|tv]",
+		Use:   "scan [movies|shorts|tv]",
 		Short: "Start a manual library scan",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
@@ -212,8 +213,8 @@ func newScanCommand() *cobra.Command {
 			if len(args) == 1 {
 				library = args[0]
 			}
-			if library != "" && library != "movies" && library != "tv" {
-				return fmt.Errorf("library must be movies or tv")
+			if library != "" && library != "movies" && library != "shorts" && library != "tv" {
+				return fmt.Errorf("library must be movies, shorts, or tv")
 			}
 			cfg, err := loadConfig()
 			if err != nil {

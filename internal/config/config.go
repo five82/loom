@@ -30,6 +30,7 @@ type PathsConfig struct {
 
 type LibraryConfig struct {
 	MoviesDir string `toml:"movies_dir"`
+	ShortsDir string `toml:"shorts_dir"`
 	TVDir     string `toml:"tv_dir"`
 }
 
@@ -54,6 +55,7 @@ func defaultConfig() *Config {
 		},
 		Library: LibraryConfig{
 			MoviesDir: "/media/daspool/media/content/movies",
+			ShortsDir: "/media/daspool/media/content/shorts",
 			TVDir:     "/media/daspool/media/content/tv",
 		},
 		Scanner: ScannerConfig{Interval: "24h"},
@@ -75,11 +77,16 @@ func (c *Config) Validate() error {
 	if c.Library.MoviesDir == "" {
 		return fmt.Errorf("library.movies_dir must not be empty")
 	}
+	if c.Library.ShortsDir == "" {
+		return fmt.Errorf("library.shorts_dir must not be empty")
+	}
 	if c.Library.TVDir == "" {
 		return fmt.Errorf("library.tv_dir must not be empty")
 	}
-	if c.Library.MoviesDir == c.Library.TVDir {
-		return fmt.Errorf("movie and TV library directories must differ")
+	if c.Library.MoviesDir == c.Library.ShortsDir ||
+		c.Library.MoviesDir == c.Library.TVDir ||
+		c.Library.ShortsDir == c.Library.TVDir {
+		return fmt.Errorf("movie, short film, and TV library directories must differ")
 	}
 	if _, err := c.ScanInterval(); err != nil {
 		return err

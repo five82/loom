@@ -40,7 +40,7 @@ func Open(path string) (*Store, error) {
 		}
 	}
 	store := &Store{db: db}
-	if err := store.migrate(); err != nil {
+	if err := store.ensureSchema(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -49,42 +49,21 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) migrate() error {
+func (s *Store) ensureSchema() error {
 	var version int
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version > 5 {
-		return fmt.Errorf("database schema version %d is newer than supported version 5", version)
-	}
-	if version == 1 {
-		if err := s.migrateImagesV2(); err != nil {
-			return err
-		}
-		version = 2
-	}
-	if version == 2 {
-		if err := s.migrateMediaStreamsV3(); err != nil {
-			return err
-		}
-		version = 3
-	}
-	if version == 3 {
-		if err := s.migrateLogoImagesV4(); err != nil {
-			return err
-		}
-		version = 4
-	}
-	if version == 4 {
-		return s.migrateGenresV5()
-	}
-	if version == 5 {
+	if version == 6 {
 		return nil
+	}
+	if version != 0 {
+		return fmt.Errorf("database schema version %d is unsupported; run loom developer reset", version)
 	}
 	const schema = `
 CREATE TABLE libraries (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL UNIQUE CHECK (kind IN ('movies', 'tv')),
+    kind TEXT NOT NULL UNIQUE CHECK (kind IN ('movies', 'shorts', 'tv')),
     name TEXT NOT NULL,
     path TEXT NOT NULL,
     last_scan_id INTEGER
@@ -185,11 +164,11 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin database migration: %w", err)
+		return fmt.Errorf("begin database schema creation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(schema); err != nil {
@@ -197,125 +176,6 @@ PRAGMA user_version = 5;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit database schema: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) migrateImagesV2() error {
-	const migration = `
-ALTER TABLE images ADD COLUMN provider TEXT NOT NULL DEFAULT 'tmdb';
-ALTER TABLE images ADD COLUMN provider_path TEXT NOT NULL DEFAULT '';
-ALTER TABLE images ADD COLUMN tag TEXT NOT NULL DEFAULT '';
-ALTER TABLE images ADD COLUMN content_type TEXT NOT NULL DEFAULT '';
-ALTER TABLE images ADD COLUMN width INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE images ADD COLUMN height INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE images ADD COLUMN manually_selected INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE images ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
-UPDATE images SET tag = printf('legacy-%d', id), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
-PRAGMA user_version = 2;
-`
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin image migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(migration); err != nil {
-		return fmt.Errorf("migrate images to schema version 2: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit image migration: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) migrateMediaStreamsV3() error {
-	const migration = `
-ALTER TABLE media_streams ADD COLUMN profile TEXT NOT NULL DEFAULT '';
-ALTER TABLE media_streams ADD COLUMN channel_layout TEXT NOT NULL DEFAULT '';
-ALTER TABLE media_streams ADD COLUMN dynamic_range TEXT NOT NULL DEFAULT '';
--- Invalidate the file fingerprint so the next scan populates the new probe fields.
-UPDATE media_files SET mtime_ns = -1;
-PRAGMA user_version = 3;
-`
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin media stream migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(migration); err != nil {
-		return fmt.Errorf("migrate media streams to schema version 3: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit media stream migration: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) migrateLogoImagesV4() error {
-	const migration = `
-CREATE TABLE images_v4 (
-    id INTEGER PRIMARY KEY,
-    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop', 'logo')),
-    path TEXT NOT NULL UNIQUE,
-    source_url TEXT NOT NULL,
-    provider TEXT NOT NULL DEFAULT 'tmdb',
-    provider_path TEXT NOT NULL DEFAULT '',
-    tag TEXT NOT NULL,
-    content_type TEXT NOT NULL,
-    width INTEGER NOT NULL DEFAULT 0,
-    height INTEGER NOT NULL DEFAULT 0,
-    manually_selected INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL,
-    UNIQUE (item_id, kind)
-);
-INSERT INTO images_v4
-SELECT id, item_id, kind, path, source_url, provider, provider_path, tag,
-    content_type, width, height, manually_selected, updated_at
-FROM images;
-DROP TABLE images;
-ALTER TABLE images_v4 RENAME TO images;
-PRAGMA user_version = 4;
-`
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin logo image migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(migration); err != nil {
-		return fmt.Errorf("migrate logo images to schema version 4: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit logo image migration: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) migrateGenresV5() error {
-	const migration = `
-ALTER TABLE items ADD COLUMN genres_loaded INTEGER NOT NULL DEFAULT 0;
-CREATE TABLE genres (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL
-);
-CREATE TABLE item_genres (
-    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    genre_id INTEGER NOT NULL REFERENCES genres(id),
-    PRIMARY KEY (item_id, genre_id)
-);
-CREATE INDEX item_genres_genre_idx ON item_genres(genre_id, item_id);
-PRAGMA user_version = 5;
-`
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin genre migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(migration); err != nil {
-		return fmt.Errorf("migrate genres to schema version 5: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit genre migration: %w", err)
 	}
 	return nil
 }
@@ -333,7 +193,10 @@ type Library struct {
 
 func (s *Store) EnsureLibrary(ctx context.Context, kind, path string) (int64, error) {
 	name := "Movies"
-	if kind == "tv" {
+	switch kind {
+	case "shorts":
+		name = "Short Films"
+	case "tv":
 		name = "TV"
 	}
 	var id int64
@@ -353,7 +216,8 @@ SELECT l.id, l.kind, l.name, l.path, COUNT(i.id)
 FROM libraries l
 LEFT JOIN items i ON i.library_id = l.id AND i.available = 1
     AND i.kind IN ('movie', 'show', 'unmatched')
-GROUP BY l.id ORDER BY l.id`)
+GROUP BY l.id
+ORDER BY CASE l.kind WHEN 'movies' THEN 0 WHEN 'shorts' THEN 1 ELSE 2 END`)
 	if err != nil {
 		return nil, fmt.Errorf("list libraries: %w", err)
 	}
@@ -1087,6 +951,7 @@ ORDER BY i.added_at DESC, i.id DESC LIMIT ?`, limit)
 
 type Stats struct {
 	Movies    int `json:"movies"`
+	Shorts    int `json:"shorts"`
 	Shows     int `json:"shows"`
 	Episodes  int `json:"episodes"`
 	Unmatched int `json:"unmatched"`
@@ -1096,20 +961,26 @@ type Stats struct {
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	var stats Stats
 	rows, err := s.db.QueryContext(ctx, `
-SELECT kind, COUNT(*) FROM items WHERE available = 1 GROUP BY kind`)
+SELECT i.kind, l.kind, COUNT(*)
+FROM items i JOIN libraries l ON l.id = i.library_id
+WHERE i.available = 1 GROUP BY i.kind, l.kind`)
 	if err != nil {
 		return stats, fmt.Errorf("catalog stats: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var kind string
+		var kind, libraryKind string
 		var count int
-		if err := rows.Scan(&kind, &count); err != nil {
+		if err := rows.Scan(&kind, &libraryKind, &count); err != nil {
 			return stats, err
 		}
 		switch kind {
 		case "movie":
-			stats.Movies = count
+			if libraryKind == "shorts" {
+				stats.Shorts = count
+			} else {
+				stats.Movies = count
+			}
 		case "show":
 			stats.Shows = count
 		case "episode":

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -345,92 +346,27 @@ func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 	}
 }
 
-func TestSchemaOneMigratesImageSelectionsAndMediaStreams(t *testing.T) {
+func TestUnsupportedSchemaRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "loom.db")
+	catalog, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`
-CREATE TABLE items (
-    id INTEGER PRIMARY KEY
-);
-INSERT INTO items(id) VALUES (3);
-CREATE TABLE images (
-    id INTEGER PRIMARY KEY,
-    item_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    path TEXT NOT NULL UNIQUE,
-    source_url TEXT NOT NULL,
-    UNIQUE (item_id, kind)
-);
-INSERT INTO images(id, item_id, kind, path, source_url)
-VALUES (7, 3, 'poster', '/poster.jpg', 'https://example/poster.jpg');
-CREATE TABLE media_files (
-    id INTEGER PRIMARY KEY,
-    mtime_ns INTEGER NOT NULL
-);
-INSERT INTO media_files(id, mtime_ns) VALUES (4, 123);
-CREATE TABLE media_streams (
-    id INTEGER PRIMARY KEY,
-    media_file_id INTEGER NOT NULL,
-    stream_index INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    codec TEXT NOT NULL DEFAULT '',
-    language TEXT NOT NULL DEFAULT '',
-    title TEXT NOT NULL DEFAULT '',
-    width INTEGER NOT NULL DEFAULT 0,
-    height INTEGER NOT NULL DEFAULT 0,
-    channels INTEGER NOT NULL DEFAULT 0,
-    is_default INTEGER NOT NULL DEFAULT 0,
-    is_forced INTEGER NOT NULL DEFAULT 0
-);
-INSERT INTO media_streams(id, media_file_id, stream_index, kind, codec)
-VALUES (5, 4, 0, 'video', 'hevc');
-PRAGMA user_version = 1;`)
-	if err != nil {
+	if _, err := db.Exec("PRAGMA user_version = 5"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	catalog, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = catalog.Close() }()
-	var version int
-	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	var provider, tag string
-	var manuallySelected bool
-	if err := catalog.db.QueryRow(`SELECT provider, tag, manually_selected FROM images WHERE id = 7`).
-		Scan(&provider, &tag, &manuallySelected); err != nil {
-		t.Fatal(err)
-	}
-	var mtime int64
-	var profile, channelLayout, dynamicRange string
-	if err := catalog.db.QueryRow(`
-SELECT media_files.mtime_ns, media_streams.profile, media_streams.channel_layout,
-    media_streams.dynamic_range
-FROM media_files JOIN media_streams ON media_streams.media_file_id = media_files.id
-WHERE media_files.id = 4`).Scan(&mtime, &profile, &channelLayout, &dynamicRange); err != nil {
-		t.Fatal(err)
-	}
-	if version != 5 || provider != "tmdb" || tag != "legacy-7" || manuallySelected ||
-		mtime != -1 || profile != "" || channelLayout != "" || dynamicRange != "" {
-		t.Fatalf("migration result = version %d, provider %q, tag %q, manual %v, "+
-			"mtime %d, profile %q, layout %q, range %q", version, provider, tag,
-			manuallySelected, mtime, profile, channelLayout, dynamicRange)
-	}
-	if _, err := catalog.UpsertImage(context.Background(), Image{
-		ItemID: 3, Kind: "logo", Path: "/logo.png", SourceURL: "https://example/logo.png",
-		Provider: "tmdb", ProviderPath: "/logo.png", Tag: "logo-tag",
-		ContentType: "image/png", Width: 300, Height: 100, UpdatedAt: now(),
-	}); err != nil {
-		t.Fatalf("store logo after migration: %v", err)
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "loom developer reset") {
+		t.Fatalf("Open with unsupported schema error = %v", err)
 	}
 }
 

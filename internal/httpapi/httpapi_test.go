@@ -141,6 +141,15 @@ func TestMovieGenreAPI(t *testing.T) {
 		t.Fatalf("genre items status=%d items=%+v", response.StatusCode, items.Items)
 	}
 
+	response, err = http.Get(server.URL + "/api/v1/items?library=shorts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("shorts library status=%d", response.StatusCode)
+	}
+
 	response, err = http.Get(server.URL + "/api/v1/items?genre_id=invalid")
 	if err != nil {
 		t.Fatal(err)

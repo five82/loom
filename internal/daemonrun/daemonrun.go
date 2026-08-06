@@ -68,7 +68,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		logger.Warn("TMDB metadata disabled", "reason", "tmdb.api_key is empty")
 	}
 	scanner := library.NewScanner(catalog, library.NewFFProber(ffprobePath), metadataMatcher,
-		cfg.Library.MoviesDir, cfg.Library.TVDir, logger)
+		cfg.Library.MoviesDir, cfg.Library.ShortsDir, cfg.Library.TVDir, logger)
 	scans := library.NewManager(scanner, interval, logger)
 	shutdownRequest := make(chan struct{}, 1)
 	api := httpapi.New(catalog, scans, metadataService, shutdownRequest)

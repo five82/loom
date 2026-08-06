@@ -44,8 +44,10 @@ func TestParseEpisodeFilename(t *testing.T) {
 func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	root := t.TempDir()
 	movies := filepath.Join(root, "movies")
+	shorts := filepath.Join(root, "shorts")
 	tv := filepath.Join(root, "tv")
 	writeTestFile(t, filepath.Join(movies, "Arrival (2016)", "Arrival (2016).mkv"))
+	writeTestFile(t, filepath.Join(shorts, "Presto (2008)", "Presto (2008).mkv"))
 	writeTestFile(t, filepath.Join(movies, "Arrival (2016)", "extras", "Bonus.mkv"))
 	writeTestFile(t, filepath.Join(tv, "The Office (US)", "Season 4", "The Office (US) - S04E01-02 - Fun Run.mkv"))
 	writeTestFile(t, filepath.Join(tv, "Stephen King's IT (1990)", "Stephen King's IT (1990).mkv"))
@@ -56,12 +58,12 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	}
 	defer func() { _ = catalog.Close() }()
 	prober := &fakeProber{}
-	scanner := NewScanner(catalog, prober, nil, movies, tv, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	scanner := NewScanner(catalog, prober, nil, movies, shorts, tv, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if err := scanner.Scan(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
-	if len(prober.paths) != 3 {
-		t.Fatalf("probed %d files, want 3; paths=%v", len(prober.paths), prober.paths)
+	if len(prober.paths) != 4 {
+		t.Fatalf("probed %d files, want 4; paths=%v", len(prober.paths), prober.paths)
 	}
 	for _, path := range prober.paths {
 		if filepath.Base(path) == "Bonus.mkv" {
@@ -73,8 +75,25 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Movies != 1 || stats.Shows != 2 || stats.Episodes != 1 || stats.Unmatched != 4 || stats.Media != 3 {
+	if stats.Movies != 1 || stats.Shorts != 1 || stats.Shows != 2 || stats.Episodes != 1 || stats.Unmatched != 5 || stats.Media != 4 {
 		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	libraries, err := catalog.Libraries(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(libraries) != 3 || libraries[0].Kind != "movies" ||
+		libraries[1].Kind != "shorts" || libraries[1].Name != "Short Films" ||
+		libraries[2].Kind != "tv" {
+		t.Fatalf("libraries = %+v", libraries)
+	}
+
+	shortItems, err := catalog.ListItems(context.Background(), store.ListOptions{LibraryKind: "shorts", TopLevel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shortItems) != 1 || shortItems[0].Kind != "movie" || shortItems[0].Title != "Presto" {
+		t.Fatalf("short items = %+v", shortItems)
 	}
 
 	shows, err := catalog.ListItems(context.Background(), store.ListOptions{LibraryKind: "tv", TopLevel: true})

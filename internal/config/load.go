@@ -77,6 +77,7 @@ func normalizePaths(cfg *Config) error {
 	for _, value := range []*string{
 		&cfg.Paths.StateDir,
 		&cfg.Library.MoviesDir,
+		&cfg.Library.ShortsDir,
 		&cfg.Library.TVDir,
 	} {
 		path, err := absolutePath(*value)
@@ -153,6 +154,7 @@ state_dir = "~/.local/state/loom"
 
 [library]
 movies_dir = "/media/daspool/media/content/movies"
+shorts_dir = "/media/daspool/media/content/shorts"
 tv_dir = "/media/daspool/media/content/tv"
 
 [scanner]

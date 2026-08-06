@@ -17,6 +17,7 @@ bind = "127.0.0.1:9000"
 state_dir = "state"
 [library]
 movies_dir = "movies"
+shorts_dir = "shorts"
 tv_dir = "tv"
 [scanner]
 interval = "6h"
@@ -38,7 +39,8 @@ language = "en-US"
 	if cfg.TMDB.APIKey != "environment-key" {
 		t.Fatalf("API key = %q, want environment override", cfg.TMDB.APIKey)
 	}
-	if !filepath.IsAbs(cfg.Library.MoviesDir) || !filepath.IsAbs(cfg.Paths.StateDir) {
+	if !filepath.IsAbs(cfg.Library.MoviesDir) || !filepath.IsAbs(cfg.Library.ShortsDir) ||
+		!filepath.IsAbs(cfg.Library.TVDir) || !filepath.IsAbs(cfg.Paths.StateDir) {
 		t.Fatal("paths were not normalized to absolute paths")
 	}
 	interval, err := cfg.ScanInterval()
@@ -64,6 +66,14 @@ func TestDefaultAPIDoesNotConflictWithJellyfin(t *testing.T) {
 	cfg := defaultConfig()
 	if cfg.API.Bind != "0.0.0.0:8097" {
 		t.Fatalf("default API bind = %q, want Loom port 8097", cfg.API.Bind)
+	}
+}
+
+func TestLibraryDirectoriesMustDiffer(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Library.ShortsDir = cfg.Library.MoviesDir
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted duplicate movie and short film directories")
 	}
 }
 

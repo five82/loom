@@ -106,8 +106,8 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) items(w http.ResponseWriter, r *http.Request) {
 	libraryKind := r.URL.Query().Get("library")
-	if libraryKind != "" && libraryKind != "movies" && libraryKind != "tv" {
-		writeError(w, http.StatusBadRequest, "library must be movies or tv")
+	if libraryKind != "" && libraryKind != "movies" && libraryKind != "shorts" && libraryKind != "tv" {
+		writeError(w, http.StatusBadRequest, "library must be movies, shorts, or tv")
 		return
 	}
 	limit, offset, err := pagination(r)
@@ -486,8 +486,8 @@ func (a *API) scan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if request.Library != "" && request.Library != "movies" && request.Library != "tv" {
-		writeError(w, http.StatusBadRequest, "library must be movies, tv, or empty")
+	if request.Library != "" && request.Library != "movies" && request.Library != "shorts" && request.Library != "tv" {
+		writeError(w, http.StatusBadRequest, "library must be movies, shorts, tv, or empty")
 		return
 	}
 	if !a.scans.Trigger(request.Library) {

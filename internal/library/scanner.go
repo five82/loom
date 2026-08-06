@@ -25,18 +25,21 @@ type Scanner struct {
 	metadata MetadataMatcher
 	logger   *slog.Logger
 	movies   string
+	shorts   string
 	tv       string
 }
 
-func NewScanner(catalog *store.Store, prober Prober, metadata MetadataMatcher, movies, tv string, logger *slog.Logger) *Scanner {
-	return &Scanner{store: catalog, prober: prober, metadata: metadata, movies: movies, tv: tv, logger: logger}
+func NewScanner(catalog *store.Store, prober Prober, metadata MetadataMatcher, movies, shorts, tv string, logger *slog.Logger) *Scanner {
+	return &Scanner{store: catalog, prober: prober, metadata: metadata, movies: movies, shorts: shorts, tv: tv, logger: logger}
 }
 
-// Scan scans one library or both when kind is empty.
+// Scan scans one library or all libraries when kind is empty.
 func (s *Scanner) Scan(ctx context.Context, kind string) error {
 	switch kind {
 	case "movies":
 		return s.scanLibrary(ctx, "movies", s.movies)
+	case "shorts":
+		return s.scanLibrary(ctx, "shorts", s.shorts)
 	case "tv":
 		return s.scanLibrary(ctx, "tv", s.tv)
 	case "":
@@ -44,8 +47,12 @@ func (s *Scanner) Scan(ctx context.Context, kind string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		shortErr := s.scanLibrary(ctx, "shorts", s.shorts)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		tvErr := s.scanLibrary(ctx, "tv", s.tv)
-		return errors.Join(movieErr, tvErr)
+		return errors.Join(movieErr, shortErr, tvErr)
 	default:
 		return fmt.Errorf("unknown library %q", kind)
 	}
@@ -78,7 +85,7 @@ func (s *Scanner) scanLibrary(ctx context.Context, kind, root string) (resultErr
 		return fmt.Errorf("read %s library root %q: %w", kind, root, err)
 	}
 
-	if kind == "movies" {
+	if kind == "movies" || kind == "shorts" {
 		err = s.scanMovies(ctx, libraryID, scanID, root, entries, counters)
 	} else {
 		err = s.scanTV(ctx, libraryID, scanID, root, entries, counters)
