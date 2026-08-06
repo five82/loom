@@ -36,7 +36,7 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"id":22,"title":"Different Movie"}`)
 	})
 	mux.HandleFunc("/movie/329865/images", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/poster.jpg","width":2,"height":3},{"file_path":"/alternate.jpg","width":2,"height":3}],"backdrops":[],"logos":[{"file_path":"/logo.png","width":3,"height":2},{"file_path":"/alternate-logo.png","width":3,"height":2}]}`)
+		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/poster.jpg","width":2,"height":3},{"file_path":"/alternate.jpg","width":2,"height":3}],"backdrops":[{"file_path":"/titled.jpg","iso_639_1":"en","width":16,"height":9},{"file_path":"/clean.jpg","width":16,"height":9}],"logos":[{"file_path":"/logo.png","width":3,"height":2},{"file_path":"/alternate-logo.png","width":3,"height":2}]}`)
 	})
 	mux.HandleFunc("/images/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -79,10 +79,40 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if item.TMDBID != 329865 || item.Overview == "" || item.PosterImageID == 0 ||
-		item.BackdropImageID == 0 || item.LogoImageID == 0 || item.PosterImageTag == "" ||
-		item.LogoImageTag == "" || !item.GenresLoaded || len(item.Genres) != 2 ||
-		item.Genres[1].ID != 878 {
+		item.BackdropImageID == 0 || item.LogoImageID == 0 || item.ThumbImageID == 0 ||
+		item.PosterImageTag == "" || item.LogoImageTag == "" || item.ThumbImageTag == "" ||
+		!item.GenresLoaded || len(item.Genres) != 2 || item.Genres[1].ID != 878 {
 		t.Fatalf("metadata not applied: %+v", item)
+	}
+	backdrop, err := catalog.Image(ctx, item.BackdropImageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backdrop.ProviderPath != "/clean.jpg" {
+		t.Fatalf("default backdrop should be the textless one: %+v", backdrop)
+	}
+	thumb, err := catalog.Image(ctx, item.ThumbImageID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thumb.ProviderPath != "/titled.jpg" {
+		t.Fatalf("default thumb should be the titled backdrop: %+v", thumb)
+	}
+	backdropOptions, err := service.ImageOptions(ctx, itemID, "backdrop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backdropOptions) != 1 || backdropOptions[0].ProviderPath != "/clean.jpg" ||
+		!backdropOptions[0].Selected {
+		t.Fatalf("backdrop options = %+v", backdropOptions)
+	}
+	thumbOptions, err := service.ImageOptions(ctx, itemID, "thumb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(thumbOptions) != 1 || thumbOptions[0].ProviderPath != "/titled.jpg" ||
+		!thumbOptions[0].Selected || !strings.Contains(thumbOptions[0].ThumbnailURL, "/w780/") {
+		t.Fatalf("thumb options = %+v", thumbOptions)
 	}
 	poster, err := catalog.Image(ctx, item.PosterImageID)
 	if err != nil {
@@ -177,6 +207,9 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 	if _, err := catalog.ItemImage(ctx, itemID, "logo"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("logo survived identity change: %v", err)
+	}
+	if _, err := catalog.ItemImage(ctx, itemID, "thumb"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("thumb survived identity change: %v", err)
 	}
 	rematched, err := catalog.Item(ctx, itemID)
 	if err != nil {
@@ -398,7 +431,7 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	})
 	mux.HandleFunc("/movie/10/images", func(w http.ResponseWriter, _ *http.Request) {
 		imageRequests.Add(1)
-		_, _ = fmt.Fprint(w, `{"posters":[],"backdrops":[],"logos":[{"file_path":"/logo.png"}]}`)
+		_, _ = fmt.Fprint(w, `{"posters":[],"backdrops":[{"file_path":"/clean.jpg"},{"file_path":"/titled.jpg","iso_639_1":"en"}],"logos":[{"file_path":"/logo.png"}]}`)
 	})
 	mux.HandleFunc("/images/", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(imageBytes)
@@ -437,7 +470,8 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if item.PosterImageID == 0 || item.BackdropImageID == 0 || item.LogoImageID == 0 ||
-		!item.GenresLoaded || len(item.Genres) != 1 || item.Genres[0].ID != 53 {
+		item.ThumbImageID == 0 || !item.GenresLoaded || len(item.Genres) != 1 ||
+		item.Genres[0].ID != 53 {
 		t.Fatalf("metadata was not backfilled: %+v", item)
 	}
 	if searchRequests.Load() != 0 || detailRequests.Load() != 1 || imageRequests.Load() != 1 {

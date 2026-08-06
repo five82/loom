@@ -424,6 +424,81 @@ func TestImageTagCaching(t *testing.T) {
 	}
 }
 
+func TestImageWidthVariants(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	picture := image.NewRGBA(image.Rect(0, 0, 600, 400))
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, picture); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "backdrop-testtag.png")
+	if err := os.WriteFile(path, encoded.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	imageID, err := catalog.UpsertImage(context.Background(), store.Image{
+		ItemID: itemID, Kind: "backdrop", Path: path, SourceURL: "https://example/backdrop.png",
+		Provider: "tmdb", ProviderPath: "/backdrop.png", Tag: "backdrop-tag",
+		ContentType: "image/png", Width: 600, Height: 400,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+	imageURL := server.URL + "/api/v1/images/" + strconv.FormatInt(imageID, 10)
+
+	response, err := http.Get(imageURL + "?width=240&tag=backdrop-tag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusOK ||
+		!strings.Contains(response.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("variant response status=%d headers=%v", response.StatusCode, response.Header)
+	}
+	resized, format, err := image.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format != "png" || resized.Bounds().Dx() != 240 || resized.Bounds().Dy() != 160 {
+		t.Fatalf("variant = %s %dx%d, want png 240x160", format,
+			resized.Bounds().Dx(), resized.Bounds().Dy())
+	}
+
+	// An oversized request snaps to the largest bucket, which is wider than
+	// the original, so the original is served unchanged.
+	response, err = http.Get(imageURL + "?width=5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr = io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Equal(body, encoded.Bytes()) {
+		t.Fatalf("oversized width should serve the original: status=%d", response.StatusCode)
+	}
+
+	for _, value := range []string{"abc", "0", "-1"} {
+		response, err = http.Get(imageURL + "?width=" + value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("width=%s status = %d, want 400", value, response.StatusCode)
+		}
+	}
+}
+
 func testPNG(t *testing.T) []byte {
 	t.Helper()
 	picture := image.NewRGBA(image.Rect(0, 0, 2, 3))

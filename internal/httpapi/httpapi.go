@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/five82/loom/internal/images"
 	"github.com/five82/loom/internal/library"
 	"github.com/five82/loom/internal/metadata"
 	"github.com/five82/loom/internal/store"
@@ -369,8 +370,8 @@ func (a *API) writeImageError(w http.ResponseWriter, err error) {
 
 func imageKind(w http.ResponseWriter, r *http.Request) (string, bool) {
 	kind := r.PathValue("kind")
-	if kind != "poster" && kind != "backdrop" && kind != "logo" {
-		writeError(w, http.StatusBadRequest, "image kind must be poster, backdrop, or logo")
+	if kind != "poster" && kind != "backdrop" && kind != "logo" && kind != "thumb" {
+		writeError(w, http.StatusBadRequest, "image kind must be poster, backdrop, logo, or thumb")
 		return "", false
 	}
 	return kind, true
@@ -390,7 +391,25 @@ func (a *API) image(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	file, err := os.Open(image.Path)
+	servePath := image.Path
+	if value := r.URL.Query().Get("width"); value != "" {
+		requested, err := strconv.Atoi(value)
+		if err != nil || requested <= 0 {
+			writeError(w, http.StatusBadRequest, "width must be a positive integer")
+			return
+		}
+		variant, err := images.Variant(image.Path, images.SnapWidth(requested))
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "image file is unavailable")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "image resize failed: "+err.Error())
+			return
+		}
+		servePath = variant
+	}
+	file, err := os.Open(servePath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "image file is unavailable")
 		return
@@ -422,7 +441,7 @@ func (a *API) image(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeContent(w, r, filepath.Base(image.Path), info.ModTime(), file)
+	http.ServeContent(w, r, filepath.Base(servePath), info.ModTime(), file)
 }
 
 func mediaContentType(path string) string {

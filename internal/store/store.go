@@ -57,8 +57,11 @@ func (s *Store) ensureSchema() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version == 6 {
+	if version == 7 {
 		return nil
+	}
+	if version == 6 {
+		return s.migrateV6AddThumbImageKind()
 	}
 	if version != 0 {
 		return fmt.Errorf("database schema version %d is unsupported; run loom developer reset", version)
@@ -147,7 +150,7 @@ CREATE TABLE media_streams (
 CREATE TABLE images (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop', 'logo')),
+    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop', 'logo', 'thumb')),
     path TEXT NOT NULL UNIQUE,
     source_url TEXT NOT NULL,
     provider TEXT NOT NULL DEFAULT 'tmdb',
@@ -167,7 +170,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -179,6 +182,48 @@ PRAGMA user_version = 6;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit database schema: %w", err)
+	}
+	return nil
+}
+
+// migrateV6AddThumbImageKind is a one-shot migration for the deployed v6
+// database. SQLite cannot alter a CHECK constraint in place, so the images
+// table is rebuilt to accept the new 'thumb' kind. Remove after the live
+// database has migrated successfully.
+func (s *Store) migrateV6AddThumbImageKind() error {
+	const migration = `
+CREATE TABLE images_v7 (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop', 'logo', 'thumb')),
+    path TEXT NOT NULL UNIQUE,
+    source_url TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'tmdb',
+    provider_path TEXT NOT NULL DEFAULT '',
+    tag TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    width INTEGER NOT NULL DEFAULT 0,
+    height INTEGER NOT NULL DEFAULT 0,
+    manually_selected INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    UNIQUE (item_id, kind)
+);
+INSERT INTO images_v7 SELECT id, item_id, kind, path, source_url, provider, provider_path,
+    tag, content_type, width, height, manually_selected, updated_at FROM images;
+DROP TABLE images;
+ALTER TABLE images_v7 RENAME TO images;
+PRAGMA user_version = 7;
+`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin v6 schema migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(migration); err != nil {
+		return fmt.Errorf("migrate schema to v7: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit v7 schema migration: %w", err)
 	}
 	return nil
 }
@@ -486,6 +531,8 @@ type Item struct {
 	BackdropImageTag string     `json:"backdrop_image_tag,omitempty"`
 	LogoImageID      int64      `json:"logo_image_id,omitempty"`
 	LogoImageTag     string     `json:"logo_image_tag,omitempty"`
+	ThumbImageID     int64      `json:"thumb_image_id,omitempty"`
+	ThumbImageTag    string     `json:"thumb_image_tag,omitempty"`
 	AddedAt          string     `json:"added_at"`
 	UpdatedAt        string     `json:"updated_at"`
 	Media            *MediaFile `json:"media,omitempty"`
@@ -529,6 +576,16 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
         (SELECT tag FROM images WHERE item_id = CASE
             WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
             WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'logo'), ''),
+    COALESCE(
+        (SELECT id FROM images WHERE item_id = i.id AND kind = 'thumb'),
+        (SELECT id FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'thumb'), 0),
+    COALESCE(
+        (SELECT tag FROM images WHERE item_id = i.id AND kind = 'thumb'),
+        (SELECT tag FROM images WHERE item_id = CASE
+            WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'thumb'), ''),
     i.added_at, i.updated_at`
 
 type ListOptions struct {
@@ -680,7 +737,7 @@ func scanItemFields(row rowScanner, trailing ...any) (Item, error) {
 		&item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber, &item.TMDBID,
 		&item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID, &item.PosterImageTag,
 		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
-		&item.LogoImageTag, &item.AddedAt, &item.UpdatedAt,
+		&item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag, &item.AddedAt, &item.UpdatedAt,
 	}
 	if err := row.Scan(append(destinations, trailing...)...); err != nil {
 		return Item{}, fmt.Errorf("scan item: %w", err)
@@ -917,7 +974,8 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 			&item.Year, &item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber,
 			&item.TMDBID, &item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID,
 			&item.PosterImageTag, &item.BackdropImageID, &item.BackdropImageTag,
-			&item.LogoImageID, &item.LogoImageTag, &item.AddedAt, &item.UpdatedAt,
+			&item.LogoImageID, &item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag,
+			&item.AddedAt, &item.UpdatedAt,
 			&position, &duration, &played, &updated); err != nil {
 			return nil, fmt.Errorf("scan continue-watching item: %w", err)
 		}

@@ -63,7 +63,8 @@ Runtime data is kept under `paths.state_dir`:
 ```text
 loom.db             SQLite catalog and playback state
 daemon.log          structured daemon log
-images/             selected TMDB poster, backdrop, and logo originals
+images/             selected TMDB poster, backdrop, logo, and thumb originals
+                    plus cached resized variants
 ```
 
 The local control socket and daemon lock use `$XDG_RUNTIME_DIR`, with `/tmp` as
@@ -182,11 +183,11 @@ GET  /api/v1/items?library=movies&genre_id=878
 GET  /api/v1/items/{id}
 GET  /api/v1/items/{id}/children
 GET  /api/v1/items/{id}/playback
-GET  /api/v1/items/{id}/images/{poster|backdrop|logo}/options
-PUT  /api/v1/items/{id}/images/{poster|backdrop|logo}
-POST /api/v1/items/{id}/images/{poster|backdrop|logo}/reset
+GET  /api/v1/items/{id}/images/{poster|backdrop|logo|thumb}/options
+PUT  /api/v1/items/{id}/images/{poster|backdrop|logo|thumb}
+POST /api/v1/items/{id}/images/{poster|backdrop|logo|thumb}/reset
 GET  /api/v1/media/{media-id}
-GET  /api/v1/images/{image-id}?tag={image-tag}
+GET  /api/v1/images/{image-id}?tag={image-tag}&width={pixels}
 PUT  /api/v1/items/{id}/progress
 GET  /api/v1/continue-watching
 GET  /api/v1/recently-added
@@ -219,13 +220,20 @@ Exact and prefix matches are returned before other substring matches. Results
 support `limit` and `offset`; episode results include `series_title` and
 `season_title` for display outside their hierarchy.
 
-Items expose poster, backdrop, and logo image IDs with content tags. Clients
-should include the tag query parameter when fetching an image; tagged responses
-are immutable and a changed selection produces a new tag. Seasons use their
-TMDB season poster when available and otherwise inherit the show poster.
-Episodes inherit the season poster; season and episode backdrops and logos
-inherit from the show. Image selection is unauthenticated under
+Items expose poster, backdrop, logo, and thumb image IDs with content tags.
+Clients should include the tag query parameter when fetching an image; tagged
+responses are immutable and a changed selection produces a new tag. Seasons use
+their TMDB season poster when available and otherwise inherit the show poster.
+Episodes inherit the season poster; season and episode backdrops, logos, and
+thumbs inherit from the show. Image selection is unauthenticated under
 Loom's trusted-LAN model.
+
+Backdrops are textless TMDB backdrops; thumbs are the language-tagged TMDB
+backdrops that have title art baked in (the same source Jellyfin uses for its
+thumb artwork). The optional `width` query parameter serves a resized copy,
+snapped up to fixed buckets of 240, 480, 960, or 1440 pixels so a phone never
+decodes a full-size original for a small card. Variants are resized once and
+cached on disk; requests at or above the original width return the original.
 
 Progress requests use milliseconds:
 

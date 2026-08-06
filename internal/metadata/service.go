@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/five82/loom/internal/images"
 	"github.com/five82/loom/internal/store"
 	"github.com/five82/loom/internal/tmdb"
 )
@@ -119,7 +120,7 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 
 func (s *Service) backfillImages(ctx context.Context, item *store.Item, details *tmdb.Details) error {
 	mediaType := metadataType(item.Kind)
-	if item.PosterImageID == 0 || item.BackdropImageID == 0 {
+	if item.PosterImageID == 0 {
 		if details == nil {
 			loaded, err := s.tmdb.Details(ctx, mediaType, item.TMDBID)
 			if err != nil {
@@ -127,20 +128,21 @@ func (s *Service) backfillImages(ctx context.Context, item *store.Item, details 
 			}
 			details = &loaded
 		}
-		if item.PosterImageID == 0 {
-			s.saveDefaultImage(ctx, item.ID, "poster", details.PosterPath)
-		}
-		if item.BackdropImageID == 0 {
-			s.saveDefaultImage(ctx, item.ID, "backdrop", details.BackdropPath)
-		}
+		s.saveDefaultImage(ctx, item.ID, "poster", details.PosterPath)
 	}
-	if item.LogoImageID == 0 {
-		images, err := s.tmdb.Images(ctx, mediaType, item.TMDBID)
+	if item.BackdropImageID == 0 || item.LogoImageID == 0 || item.ThumbImageID == 0 {
+		provided, err := s.tmdb.Images(ctx, mediaType, item.TMDBID)
 		if err != nil {
 			return err
 		}
-		if len(images.Logos) > 0 {
-			s.saveDefaultImage(ctx, item.ID, "logo", images.Logos[0].FilePath)
+		if item.BackdropImageID == 0 {
+			s.saveDefaultImage(ctx, item.ID, "backdrop", defaultBackdropPath(provided.Backdrops))
+		}
+		if item.LogoImageID == 0 && len(provided.Logos) > 0 {
+			s.saveDefaultImage(ctx, item.ID, "logo", provided.Logos[0].FilePath)
+		}
+		if item.ThumbImageID == 0 {
+			s.saveDefaultImage(ctx, item.ID, "thumb", defaultThumbPath(provided.Backdrops))
 		}
 	}
 	if item.Kind == "show" {
@@ -197,7 +199,7 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	if identityChanged {
 		// Never carry a manual selection across two different titles. Clearing
 		// first also lets a later refresh retry if the new download fails.
-		for _, kind := range []string{"poster", "backdrop", "logo"} {
+		for _, kind := range []string{"poster", "backdrop", "logo", "thumb"} {
 			s.clearImage(ctx, itemID, kind)
 		}
 		if item.Kind == "show" {
@@ -205,8 +207,7 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 		}
 	}
 	s.saveDefaultImage(ctx, itemID, "poster", details.PosterPath)
-	s.saveDefaultImage(ctx, itemID, "backdrop", details.BackdropPath)
-	s.saveDefaultLogo(ctx, itemID, mediaType, tmdbID)
+	s.saveDefaultArtwork(ctx, itemID, mediaType, tmdbID, details.BackdropPath)
 	if item.Kind == "show" {
 		s.updateEpisodes(ctx, itemID, tmdbID)
 	}
@@ -307,22 +308,26 @@ func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*s
 			return nil, err
 		}
 		providerPath = details.PosterPath
-	} else if kind == "logo" {
-		images, err := s.tmdb.Images(ctx, metadataType(item.Kind), item.TMDBID)
-		if err != nil {
-			return nil, err
-		}
-		if len(images.Logos) > 0 {
-			providerPath = images.Logos[0].FilePath
-		}
-	} else {
+	} else if kind == "poster" {
 		details, err := s.tmdb.Details(ctx, metadataType(item.Kind), item.TMDBID)
 		if err != nil {
 			return nil, err
 		}
 		providerPath = details.PosterPath
-		if kind == "backdrop" {
-			providerPath = details.BackdropPath
+	} else {
+		provided, err := s.tmdb.Images(ctx, metadataType(item.Kind), item.TMDBID)
+		if err != nil {
+			return nil, err
+		}
+		switch kind {
+		case "backdrop":
+			providerPath = defaultBackdropPath(provided.Backdrops)
+		case "thumb":
+			providerPath = defaultThumbPath(provided.Backdrops)
+		case "logo":
+			if len(provided.Logos) > 0 {
+				providerPath = provided.Logos[0].FilePath
+			}
 		}
 	}
 	if providerPath == "" {
@@ -342,7 +347,7 @@ func isTMDBNotFound(err error) bool {
 }
 
 func (s *Service) imageItem(ctx context.Context, itemID int64, kind string) (*store.Item, *store.Item, error) {
-	if kind != "poster" && kind != "backdrop" && kind != "logo" {
+	if kind != "poster" && kind != "backdrop" && kind != "logo" && kind != "thumb" {
 		return nil, nil, fmt.Errorf("%w: unsupported image kind %q", ErrImageUnavailable, kind)
 	}
 	item, err := s.store.Item(ctx, itemID)
@@ -379,26 +384,70 @@ func (s *Service) saveDefaultImage(ctx context.Context, itemID int64, kind, prov
 	}
 }
 
-func (s *Service) saveDefaultLogo(ctx context.Context, itemID int64, mediaType string, tmdbID int64) {
-	images, err := s.tmdb.Images(ctx, mediaType, tmdbID)
+// saveDefaultArtwork saves the defaults that come from the TMDB images list:
+// a textless backdrop, the top logo, and a titled backdrop as the thumb.
+// detailsBackdropPath is the fallback when the list has no backdrops at all.
+func (s *Service) saveDefaultArtwork(
+	ctx context.Context, itemID int64, mediaType string, tmdbID int64, detailsBackdropPath string,
+) {
+	provided, err := s.tmdb.Images(ctx, mediaType, tmdbID)
 	if err != nil {
-		s.logger.Warn("TMDB logo metadata unavailable", "item_id", itemID, "error", err)
+		s.logger.Warn("TMDB artwork metadata unavailable", "item_id", itemID, "error", err)
+		s.saveDefaultImage(ctx, itemID, "backdrop", detailsBackdropPath)
 		return
 	}
-	if len(images.Logos) > 0 {
-		s.saveDefaultImage(ctx, itemID, "logo", images.Logos[0].FilePath)
+	backdropPath := defaultBackdropPath(provided.Backdrops)
+	if backdropPath == "" {
+		backdropPath = detailsBackdropPath
+	}
+	s.saveDefaultImage(ctx, itemID, "backdrop", backdropPath)
+	if len(provided.Logos) > 0 {
+		s.saveDefaultImage(ctx, itemID, "logo", provided.Logos[0].FilePath)
+	}
+	s.saveDefaultImage(ctx, itemID, "thumb", defaultThumbPath(provided.Backdrops))
+}
+
+func imageCandidates(provided tmdb.Images, kind string) ([]tmdb.ImageCandidate, string) {
+	switch kind {
+	case "backdrop":
+		return filterBackdrops(provided.Backdrops, false), "w780"
+	case "thumb":
+		return filterBackdrops(provided.Backdrops, true), "w780"
+	case "logo":
+		return provided.Logos, "w300"
+	default:
+		return provided.Posters, "w342"
 	}
 }
 
-func imageCandidates(images tmdb.Images, kind string) ([]tmdb.ImageCandidate, string) {
-	switch kind {
-	case "backdrop":
-		return images.Backdrops, "w780"
-	case "logo":
-		return images.Logos, "w300"
-	default:
-		return images.Posters, "w342"
+// TMDB has no separate thumb artwork: a backdrop with a language has title
+// art baked into the image (what Jellyfin calls a thumb), while a textless
+// backdrop is a clean one suitable for backgrounds.
+func filterBackdrops(backdrops []tmdb.ImageCandidate, titled bool) []tmdb.ImageCandidate {
+	var result []tmdb.ImageCandidate
+	for _, candidate := range backdrops {
+		if (candidate.Language != "") == titled {
+			result = append(result, candidate)
+		}
 	}
+	return result
+}
+
+func defaultBackdropPath(backdrops []tmdb.ImageCandidate) string {
+	if textless := filterBackdrops(backdrops, false); len(textless) > 0 {
+		return textless[0].FilePath
+	}
+	if len(backdrops) > 0 {
+		return backdrops[0].FilePath
+	}
+	return ""
+}
+
+func defaultThumbPath(backdrops []tmdb.ImageCandidate) string {
+	if titled := filterBackdrops(backdrops, true); len(titled) > 0 {
+		return titled[0].FilePath
+	}
+	return ""
 }
 
 func (s *Service) clearSeasonPosters(ctx context.Context, showID int64) {
@@ -427,7 +476,7 @@ func (s *Service) clearImage(ctx context.Context, itemID int64, kind string) {
 		s.logger.Warn("metadata image not cleared", "item_id", itemID, "kind", kind, "error", err)
 		return
 	}
-	if err := os.Remove(current.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := images.RemoveWithVariants(current.Path); err != nil {
 		s.logger.Warn("old metadata image file not removed", "path", current.Path, "error", err)
 	}
 }
@@ -517,7 +566,7 @@ func (s *Service) downloadProviderImage(
 		return nil, err
 	}
 	if current != nil && current.Path != path {
-		_ = os.Remove(current.Path)
+		_ = images.RemoveWithVariants(current.Path)
 	}
 	return s.store.ItemImage(ctx, itemID, kind)
 }
