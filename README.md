@@ -92,8 +92,8 @@ This stops the daemon if necessary and deletes everything under
 `paths.state_dir`, including the database, catalog, playback state, metadata,
 daemon logs, and downloaded artwork. Media libraries are not modified. The
 loaded `config.toml` is also preserved, even when it is stored inside the state
-directory. Loom only opens the current catalog schema; after a schema change,
-use this reset command rather than maintaining migrations.
+directory. This is a destructive development tool, not the normal schema
+upgrade path.
 
 For manual scans:
 

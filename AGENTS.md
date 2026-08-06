@@ -25,6 +25,26 @@ Loom and Takeup are developed and deployed together for one user. Do not preserv
 - When troubleshooting, gather evidence and test rather than guessing.
 - Add focused tests for new behavior and regressions.
 
+## Database Schema Changes
+
+The catalog contains durable playback state and manual artwork selections.
+`loom developer reset` is destructive and is not a normal schema upgrade path.
+
+- Add a focused one-shot migration from the currently deployed schema.
+- Stop Loom and create a mode `0600` temporary database backup under `/tmp`
+  before deploying. Let the new binary perform the migration on startup.
+- Verify the schema version, foreign-key integrity, playback state, and manual
+  artwork selections before considering the migration complete.
+- Report the temporary backup path and leave it for normal system cleanup after
+  successful validation. If migration or validation fails, retain the backup
+  and report it as the restoration source. Never treat `/tmp` as durable backup
+  storage.
+- Because Loom has one deployment, remove the migration and its legacy tests
+  after the live database has migrated successfully. Keep only current-schema
+  creation, current-version acceptance, and rejection of unsupported versions.
+- Use `loom developer reset` for schema changes only when the operator
+  explicitly accepts losing all Loom-owned state.
+
 ## Build, Test, Lint
 
 ```bash
