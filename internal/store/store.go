@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -332,12 +335,30 @@ type MediaFile struct {
 	Path           string   `json:"-"`
 	Filename       string   `json:"filename"`
 	Size           int64    `json:"size"`
+	Tag            string   `json:"tag"`
 	MTimeNS        int64    `json:"-"`
 	DurationMS     int64    `json:"duration_ms"`
 	Container      string   `json:"container"`
 	ProbeError     string   `json:"probe_error,omitempty"`
 	LastSeenScanID int64    `json:"-"`
 	Streams        []Stream `json:"streams,omitempty"`
+}
+
+// MediaTag identifies a scanner-observed file version without reading and
+// hashing an entire, potentially very large media file.
+func MediaTag(id, size, mtimeNS int64) string {
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte(strconv.FormatInt(id, 10)))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(strconv.FormatInt(size, 10)))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(strconv.FormatInt(mtimeNS, 10)))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func prepareMedia(media *MediaFile) {
+	media.Filename = filepath.Base(media.Path)
+	media.Tag = MediaTag(media.ID, media.Size, media.MTimeNS)
 }
 
 type Stream struct {
@@ -369,7 +390,7 @@ FROM media_files WHERE path = ?`, path).Scan(&media.ID, &media.ItemID, &media.Pa
 	if err != nil {
 		return nil, fmt.Errorf("find media file: %w", err)
 	}
-	media.Filename = filepath.Base(media.Path)
+	prepareMedia(&media)
 	return &media, nil
 }
 
@@ -749,7 +770,7 @@ FROM media_files WHERE item_id = ?`, itemID).Scan(&media.ID, &media.ItemID, &med
 	if err != nil {
 		return nil, fmt.Errorf("get item media: %w", err)
 	}
-	media.Filename = filepath.Base(media.Path)
+	prepareMedia(&media)
 	streams, err := s.streams(ctx, media.ID)
 	if err != nil {
 		return nil, err
@@ -773,7 +794,7 @@ WHERE m.id = ? AND i.available = 1`, id).Scan(&media.ID, &media.ItemID, &media.P
 	if err != nil {
 		return nil, fmt.Errorf("get media: %w", err)
 	}
-	media.Filename = filepath.Base(media.Path)
+	prepareMedia(&media)
 	return &media, nil
 }
 

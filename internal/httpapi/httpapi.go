@@ -206,7 +206,7 @@ func (a *API) playback(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"item_id": item.ID, "media": item.Media,
-		"stream_url": fmt.Sprintf("/api/v1/media/%d", item.Media.ID),
+		"stream_url": fmt.Sprintf("/api/v1/media/%d?tag=%s", item.Media.ID, item.Media.Tag),
 	})
 }
 
@@ -262,8 +262,20 @@ func (a *API) media(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "media file is unavailable")
 		return
 	}
+	actualTag := store.MediaTag(media.ID, info.Size(), info.ModTime().UnixNano())
+	requestedTag := r.URL.Query().Get("tag")
+	if requestedTag != "" && requestedTag != actualTag {
+		writeError(w, http.StatusNotFound, "media version not found")
+		return
+	}
 	if contentType := mediaContentType(media.Path); contentType != "" {
 		w.Header().Set("Content-Type", contentType)
+	}
+	w.Header().Set("ETag", strconv.Quote(actualTag))
+	if requestedTag == actualTag {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeContent(w, r, filepath.Base(media.Path), info.ModTime(), file)

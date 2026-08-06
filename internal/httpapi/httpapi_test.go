@@ -25,7 +25,7 @@ import (
 	"github.com/five82/loom/internal/tmdb"
 )
 
-func TestMediaRangeAndProgress(t *testing.T) {
+func TestMediaDownloadMetadataAndVersionedResponses(t *testing.T) {
 	catalog, itemID, mediaID, contents := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
 	manager := library.NewManager(nil, 0, slog.Default())
@@ -33,12 +33,34 @@ func TestMediaRangeAndProgress(t *testing.T) {
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
-	request, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/media/"+strconv.FormatInt(mediaID, 10), nil)
+	response, err := http.Get(server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10) + "/playback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var playback struct {
+		Media     store.MediaFile `json:"media"`
+		StreamURL string          `json:"stream_url"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&playback); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || playback.Media.Size != int64(len(contents)) ||
+		playback.Media.Filename != "Movie.mkv" || playback.Media.Tag == "" {
+		t.Fatalf("playback download metadata status=%d response=%+v", response.StatusCode, playback)
+	}
+	wantStreamURL := "/api/v1/media/" + strconv.FormatInt(mediaID, 10) + "?tag=" + playback.Media.Tag
+	if playback.StreamURL != wantStreamURL {
+		t.Fatalf("stream URL = %q, want %q", playback.StreamURL, wantStreamURL)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+playback.StreamURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Range", "bytes=2-5")
-	response, err := http.DefaultClient.Do(request)
+	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,13 +72,65 @@ func TestMediaRangeAndProgress(t *testing.T) {
 	if response.StatusCode != http.StatusPartialContent || string(body) != string(contents[2:6]) {
 		t.Fatalf("range response status=%d body=%q", response.StatusCode, body)
 	}
+	if response.Header.Get("ETag") != strconv.Quote(playback.Media.Tag) ||
+		response.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("versioned media headers = %v", response.Header)
+	}
 
-	progressBody, _ := json.Marshal(map[string]int64{"position_ms": 540_000, "duration_ms": 600_000})
-	request, err = http.NewRequest(http.MethodPut, server.URL+"/api/v1/items/"+strconv.FormatInt(itemID, 10)+"/progress", bytes.NewReader(progressBody))
+	request, err = http.NewRequest(http.MethodHead, server.URL+playback.StreamURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.ContentLength != int64(len(contents)) ||
+		response.Header.Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("HEAD response status=%d length=%d headers=%v", response.StatusCode,
+			response.ContentLength, response.Header)
+	}
+
+	response, err = http.Get(server.URL + "/api/v1/media/" + strconv.FormatInt(mediaID, 10) + "?tag=stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("stale media tag status = %d", response.StatusCode)
+	}
+
+	media, err := catalog.Media(context.Background(), mediaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(media.Path, append(contents, 'x'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	response, err = http.Get(server.URL + playback.StreamURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("replaced media version status = %d", response.StatusCode)
+	}
+}
+
+func TestProgress(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+
+	progressBody, _ := json.Marshal(map[string]int64{"position_ms": 540_000, "duration_ms": 600_000})
+	request, err := http.NewRequest(http.MethodPut, server.URL+"/api/v1/items/"+strconv.FormatInt(itemID, 10)+"/progress", bytes.NewReader(progressBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,8 +462,13 @@ func testCatalog(t *testing.T) (*store.Store, int64, int64, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mediaID, err := catalog.UpsertMedia(ctx, store.MediaFile{
-		ItemID: itemID, Path: path, Size: int64(len(contents)), DurationMS: 600_000, LastSeenScanID: scanID,
+		ItemID: itemID, Path: path, Size: info.Size(), MTimeNS: info.ModTime().UnixNano(),
+		DurationMS: 600_000, LastSeenScanID: scanID,
 	}, []store.Stream{{
 		Index: 0, Kind: "video", Codec: "hevc", Profile: "Main 10", Width: 3840,
 		Height: 1604, DynamicRange: "hdr", IsDefault: true,

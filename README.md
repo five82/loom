@@ -2,7 +2,7 @@
 
 Loom is a personal, single-user movie, short film, and TV media server. It
 catalogs media from read-only libraries and serves original files directly to
-clients. It does not transcode or remux media.
+clients. Loom intentionally never transcodes or remuxes media.
 
 The initial client will be an Android/Android TV application. Loom currently
 has no authentication, so it should only be used on a trusted LAN.
@@ -192,8 +192,14 @@ GET  /api/v1/continue-watching
 GET  /api/v1/recently-added
 ```
 
-Media responses support `HEAD` and HTTP byte ranges. The API never accepts a
-filesystem path from a client.
+Media responses support `HEAD` and HTTP byte ranges. Playback responses include
+the original filename, exact file size in bytes, and a media version tag. The
+returned stream URL includes that tag; tagged responses have an `ETag` and are
+immutable, while stale tags return `404 Not Found`. This lets clients resume and
+validate offline downloads without combining bytes from different file
+versions. An offline download is always a full-size copy of the original source
+because Loom never transcodes, remuxes, or creates quality variants. The API
+never accepts a filesystem path from a client.
 
 Select one of the provider paths returned by the image-options endpoint:
 
