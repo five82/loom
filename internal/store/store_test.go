@@ -358,161 +358,29 @@ func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 	}
 }
 
-// TestSchemaV6MigratesToV7 exercises the one-shot images-table rebuild.
-// Remove together with migrateV6AddThumbImageKind after the live database
-// has migrated.
-func TestSchemaV6MigratesToV7(t *testing.T) {
-	const schemaV6 = `
-CREATE TABLE libraries (
-    id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL UNIQUE CHECK (kind IN ('movies', 'shorts', 'tv')),
-    name TEXT NOT NULL,
-    path TEXT NOT NULL,
-    last_scan_id INTEGER
-);
-CREATE TABLE scan_runs (
-    id INTEGER PRIMARY KEY,
-    library_id INTEGER NOT NULL REFERENCES libraries(id),
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
-    discovered_files INTEGER NOT NULL DEFAULT 0,
-    changed_files INTEGER NOT NULL DEFAULT 0,
-    probe_errors INTEGER NOT NULL DEFAULT 0,
-    error TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE items (
-    id INTEGER PRIMARY KEY,
-    library_id INTEGER NOT NULL REFERENCES libraries(id),
-    parent_id INTEGER REFERENCES items(id),
-    source_key TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('movie', 'show', 'season', 'episode', 'unmatched')),
-    title TEXT NOT NULL,
-    year INTEGER NOT NULL DEFAULT 0,
-    season_number INTEGER NOT NULL DEFAULT 0,
-    episode_number INTEGER NOT NULL DEFAULT 0,
-    episode_end_number INTEGER NOT NULL DEFAULT 0,
-    tmdb_id INTEGER NOT NULL DEFAULT 0,
-    overview TEXT NOT NULL DEFAULT '',
-    release_date TEXT NOT NULL DEFAULT '',
-    genres_loaded INTEGER NOT NULL DEFAULT 0,
-    available INTEGER NOT NULL DEFAULT 1,
-    last_seen_scan_id INTEGER NOT NULL,
-    added_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (library_id, source_key)
-);
-CREATE INDEX items_parent_idx ON items(parent_id, available, title);
-CREATE INDEX items_library_idx ON items(library_id, available, kind);
-CREATE TABLE genres (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL
-);
-CREATE TABLE item_genres (
-    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    genre_id INTEGER NOT NULL REFERENCES genres(id),
-    PRIMARY KEY (item_id, genre_id)
-);
-CREATE INDEX item_genres_genre_idx ON item_genres(genre_id, item_id);
-CREATE TABLE media_files (
-    id INTEGER PRIMARY KEY,
-    item_id INTEGER NOT NULL UNIQUE REFERENCES items(id) ON DELETE CASCADE,
-    path TEXT NOT NULL UNIQUE,
-    size INTEGER NOT NULL,
-    mtime_ns INTEGER NOT NULL,
-    duration_ms INTEGER NOT NULL DEFAULT 0,
-    container TEXT NOT NULL DEFAULT '',
-    probe_error TEXT NOT NULL DEFAULT '',
-    last_seen_scan_id INTEGER NOT NULL
-);
-CREATE TABLE media_streams (
-    id INTEGER PRIMARY KEY,
-    media_file_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE CASCADE,
-    stream_index INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    codec TEXT NOT NULL DEFAULT '',
-    profile TEXT NOT NULL DEFAULT '',
-    language TEXT NOT NULL DEFAULT '',
-    title TEXT NOT NULL DEFAULT '',
-    width INTEGER NOT NULL DEFAULT 0,
-    height INTEGER NOT NULL DEFAULT 0,
-    channels INTEGER NOT NULL DEFAULT 0,
-    channel_layout TEXT NOT NULL DEFAULT '',
-    dynamic_range TEXT NOT NULL DEFAULT '',
-    is_default INTEGER NOT NULL DEFAULT 0,
-    is_forced INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (media_file_id, stream_index)
-);
-CREATE TABLE images (
-    id INTEGER PRIMARY KEY,
-    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('poster', 'backdrop', 'logo')),
-    path TEXT NOT NULL UNIQUE,
-    source_url TEXT NOT NULL,
-    provider TEXT NOT NULL DEFAULT 'tmdb',
-    provider_path TEXT NOT NULL DEFAULT '',
-    tag TEXT NOT NULL,
-    content_type TEXT NOT NULL,
-    width INTEGER NOT NULL DEFAULT 0,
-    height INTEGER NOT NULL DEFAULT 0,
-    manually_selected INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL,
-    UNIQUE (item_id, kind)
-);
-CREATE TABLE playback_state (
-    item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    position_ms INTEGER NOT NULL,
-    duration_ms INTEGER NOT NULL,
-    played INTEGER NOT NULL,
-    updated_at TEXT NOT NULL
-);
-PRAGMA user_version = 6;
-INSERT INTO libraries(kind, name, path) VALUES ('movies', 'Movies', '/movies');
-INSERT INTO items(library_id, source_key, kind, title, last_seen_scan_id, added_at, updated_at)
-VALUES (1, 'movie', 'movie', 'Movie', 1, '2026-01-01', '2026-01-01');
-INSERT INTO images(item_id, kind, path, source_url, provider, provider_path, tag,
-    content_type, manually_selected, updated_at)
-VALUES (1, 'poster', '/images/1/poster.jpg', 'https://example/poster.jpg', 'tmdb',
-    '/poster.jpg', 'poster-tag', 'image/jpeg', 1, '2026-01-01');
-`
-	ctx := context.Background()
+func TestCurrentSchemaCreatedAndAccepted(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "loom.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(schemaV6); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	catalog, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	defer func() { _ = catalog.Close() }()
-	poster, err := catalog.ItemImage(ctx, 1, "poster")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if poster.ProviderPath != "/poster.jpg" || poster.Tag != "poster-tag" || !poster.ManuallySelected {
-		t.Fatalf("poster did not survive migration: %+v", poster)
-	}
-	if _, err := catalog.UpsertImage(ctx, Image{
-		ItemID: 1, Kind: "thumb", Path: "/images/1/thumb.jpg", SourceURL: "https://example/thumb.jpg",
-		Provider: "tmdb", ProviderPath: "/thumb.jpg", Tag: "thumb-tag",
-		ContentType: "image/jpeg", UpdatedAt: now(),
-	}); err != nil {
-		t.Fatalf("thumb kind rejected after migration: %v", err)
 	}
 	var version int
 	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	if version != 7 {
-		t.Fatalf("schema version after migration = %d, want 7", version)
+		t.Fatalf("created schema version = %d, want 7", version)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err = Open(path)
+	if err != nil {
+		t.Fatalf("open current schema: %v", err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
