@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/five82/loom/internal/store"
 )
@@ -140,6 +141,16 @@ func writeTestFileContent(t *testing.T, path, content string) {
 	}
 }
 
+// setModTime pins a file's timestamp relative to a fixed base so tests that turn
+// on which file is newest never depend on how fast they wrote the files.
+func setModTime(t *testing.T, path string, offset time.Duration) {
+	t.Helper()
+	stamp := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC).Add(offset)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // newTVScanner prepares a scanner over a TV library alone. Movie and short film
 // roots are never read because these tests only scan "tv".
 func newTVScanner(t *testing.T, root string) (*store.Store, *Scanner) {
@@ -244,6 +255,8 @@ func TestSurvivingEpisodeAdoptsRemainingDuplicateFile(t *testing.T) {
 	older := filepath.Join(season, "Robot Chicken - S10E17 - Hemorrhoids WEBDL-1080p.mkv")
 	writeTestFileContent(t, newer, "the file in use")
 	writeTestFileContent(t, older, "the leftover duplicate")
+	setModTime(t, newer, 0)
+	setModTime(t, older, -2*time.Hour)
 	catalog, scanner := newTVScanner(t, root)
 	if err := scanner.Scan(ctx, "tv"); err != nil {
 		t.Fatal(err)
@@ -257,7 +270,7 @@ func TestSurvivingEpisodeAdoptsRemainingDuplicateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if kept.Media == nil || kept.Media.Path != newer {
-		t.Fatalf("expected the sorted-first file to win, got %+v", kept.Media)
+		t.Fatalf("expected the newest file to win, got %+v", kept.Media)
 	}
 	if _, err := catalog.SetProgress(ctx, kept.ID, 120_000, 600_000); err != nil {
 		t.Fatal(err)
@@ -323,6 +336,8 @@ func TestDuplicateEpisodeFilesResolveToOneEpisode(t *testing.T) {
 	replacement := filepath.Join(season, "The Office (US) - S04E01 - Fun Run [AV1].mkv")
 	writeTestFile(t, replaced)
 	writeTestFileContent(t, replacement, "replacement")
+	setModTime(t, replaced, -2*time.Hour)
+	setModTime(t, replacement, 0)
 	catalog, scanner := newTVScanner(t, root)
 	if err := scanner.Scan(ctx, "tv"); err != nil {
 		t.Fatal(err)
@@ -334,6 +349,9 @@ func TestDuplicateEpisodeFilesResolveToOneEpisode(t *testing.T) {
 	first, err := catalog.Item(ctx, episodes[0].ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if first.Media == nil || first.Media.Path != replacement {
+		t.Fatalf("expected the newest file to win, got %+v", first.Media)
 	}
 
 	// The choice must not alternate between scans while both files are present.
@@ -350,6 +368,80 @@ func TestDuplicateEpisodeFilesResolveToOneEpisode(t *testing.T) {
 	}
 	if first.Media == nil || second.Media == nil || first.Media.Path != second.Media.Path {
 		t.Fatalf("episode file flipped between scans: %+v then %+v", first.Media, second.Media)
+	}
+}
+
+// A movie stays in the catalog while a replacement encode and the file it
+// replaces briefly share its directory.
+func TestMovieSurvivesSwapWindow(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	movies := filepath.Join(root, "movies")
+	dir := filepath.Join(movies, "Arrival (2016)")
+	old := filepath.Join(dir, "Arrival (2016).mkv")
+	replacement := filepath.Join(dir, "Arrival (2016) [AV1 2160p].mkv")
+	writeTestFile(t, old)
+	catalog, err := store.Open(filepath.Join(root, "state", "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	scanner := NewScanner(catalog, &fakeProber{}, nil, movies,
+		filepath.Join(root, "shorts"), filepath.Join(root, "tv"),
+		slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err := scanner.Scan(ctx, "movies"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := catalog.ListItems(ctx, store.ListOptions{LibraryKind: "movies", TopLevel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("movies = %+v, want 1", listed)
+	}
+	movieID := listed[0].ID
+	if _, err := catalog.SetProgress(ctx, movieID, 120_000, 600_000); err != nil {
+		t.Fatal(err)
+	}
+
+	// The new encode lands before the old file is deleted.
+	writeTestFileContent(t, replacement, "a considerably larger av1 encode")
+	setModTime(t, old, -2*time.Hour)
+	setModTime(t, replacement, 0)
+	if err := scanner.Scan(ctx, "movies"); err != nil {
+		t.Fatal(err)
+	}
+	listed, err = catalog.ListItems(ctx, store.ListOptions{LibraryKind: "movies", TopLevel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].ID != movieID {
+		t.Fatalf("movie left the catalog during the swap: %+v", listed)
+	}
+	during, err := catalog.Item(ctx, movieID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if during.Media == nil || during.Media.Path != replacement {
+		t.Fatalf("swap window did not serve the newest file: %+v", during.Media)
+	}
+	if during.Progress == nil || during.Progress.ResumePositionMS != 120_000 {
+		t.Fatalf("swap window lost playback state: %+v", during.Progress)
+	}
+
+	// Finishing the swap must not disturb the item any further.
+	if err := os.Remove(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := scanner.Scan(ctx, "movies"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := catalog.Item(ctx, movieID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Media == nil || after.Media.Path != replacement || after.Media.Tag != during.Media.Tag {
+		t.Fatalf("completing the swap churned the media file: %+v", after.Media)
 	}
 }
 

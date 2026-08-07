@@ -198,10 +198,11 @@ episode's numbers, creates a new item and leaves the old state behind. Unmatched
 videos are still identified by filename because they have no episode numbers to
 key on.
 
-Remove the old file as part of the swap. A movie directory holding two videos is
-skipped, so the movie drops out of the catalog until only one remains. When two
-files claim one episode, the first in sorted order is used and the other is
-logged.
+The old file does not have to disappear at the same instant the new one lands.
+While several videos share a movie directory, or claim one episode, Loom uses
+the most recently modified file and logs the ones it passed over, so a title
+stays in the catalog and keeps playing throughout the swap. Delete the leftover
+when convenient; the next scan then finds a single file and changes nothing.
 
 NFO files, local artwork, external subtitle files, and movie extras are ignored.
 Embedded stream details are reported from `ffprobe`, including video and audio

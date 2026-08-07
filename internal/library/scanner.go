@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/five82/loom/internal/store"
 )
@@ -56,6 +57,33 @@ func (s *Scanner) Scan(ctx context.Context, kind string) error {
 	default:
 		return fmt.Errorf("unknown library %q", kind)
 	}
+}
+
+// videoFile pairs a discovered video with the timestamp used to decide which
+// file wins when several claim one movie or episode.
+type videoFile struct {
+	path    string
+	modTime time.Time
+}
+
+func newVideoFile(path string, entry fs.DirEntry) (videoFile, error) {
+	info, err := entry.Info()
+	if err != nil {
+		return videoFile{}, fmt.Errorf("stat video %q: %w", path, err)
+	}
+	return videoFile{path: path, modTime: info.ModTime()}, nil
+}
+
+// sortNewestFirst puts a replacement encode ahead of the file it replaces, so
+// the caller can take the first entry and treat the rest as leftovers. Equal
+// timestamps fall back to the path so a tie cannot flip between scans.
+func sortNewestFirst(videos []videoFile) {
+	sort.Slice(videos, func(a, b int) bool {
+		if !videos[a].modTime.Equal(videos[b].modTime) {
+			return videos[a].modTime.After(videos[b].modTime)
+		}
+		return videos[a].path < videos[b].path
+	})
 }
 
 type scanCounters struct {
@@ -120,21 +148,29 @@ func (s *Scanner) scanMovies(ctx context.Context, libraryID, scanID int64, root 
 		if err != nil {
 			return fmt.Errorf("read movie directory %q: %w", dir, err)
 		}
-		var candidates []os.DirEntry
+		var candidates []videoFile
 		for _, child := range children {
 			// Only direct children are considered. This deliberately ignores all
 			// nested extras and behind-the-scenes media.
 			if child.Type().IsRegular() && isVideo(child.Name()) {
-				candidates = append(candidates, child)
+				video, err := newVideoFile(filepath.Join(dir, child.Name()), child)
+				if err != nil {
+					return err
+				}
+				candidates = append(candidates, video)
 			}
 		}
 		if len(candidates) == 0 {
 			continue
 		}
+		sortNewestFirst(candidates)
 		if len(candidates) > 1 {
-			s.logger.Warn("movie directory skipped", "path", dir,
-				"reason", "expected exactly one direct video file", "video_files", len(candidates))
-			continue
+			// A movie directory is meant to hold exactly one video, but a
+			// replacement encode and the file it replaces coexist until the old one
+			// is deleted. Serving the newer file keeps the movie in the catalog
+			// through that window instead of dropping it until the swap finishes.
+			s.logger.Warn("movie directory has more than one video", "path", dir,
+				"using", candidates[0].path, "video_files", len(candidates))
 		}
 		title, year := parseNamedYear(entry.Name())
 		itemID, err := s.store.UpsertItem(ctx, store.ItemInput{
@@ -144,8 +180,7 @@ func (s *Scanner) scanMovies(ctx context.Context, libraryID, scanID int64, root 
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(dir, candidates[0].Name())
-		if err := s.scanMedia(ctx, itemID, scanID, path, counters); err != nil {
+		if err := s.scanMedia(ctx, itemID, scanID, candidates[0].path, counters); err != nil {
 			return err
 		}
 		s.autoMatch(ctx, itemID, counters)
@@ -162,7 +197,7 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 			continue
 		}
 		showDir := filepath.Join(root, entry.Name())
-		var videos []string
+		var videos []videoFile
 		err := filepath.WalkDir(showDir, func(path string, item fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -180,7 +215,11 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 				return nil
 			}
 			if item.Type().IsRegular() && isVideo(path) {
-				videos = append(videos, path)
+				video, err := newVideoFile(path, item)
+				if err != nil {
+					return err
+				}
+				videos = append(videos, video)
 			}
 			return nil
 		})
@@ -190,7 +229,7 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 		if len(videos) == 0 {
 			continue
 		}
-		sort.Strings(videos)
+		sortNewestFirst(videos)
 		showTitle, showYear := parseNamedYear(entry.Name())
 		showID, err := s.store.UpsertItem(ctx, store.ItemInput{
 			LibraryID: libraryID, SourceKey: "show:" + entry.Name(), Kind: "show",
@@ -201,7 +240,8 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 		}
 		seasonIDs := make(map[int]int64)
 		episodePaths := make(map[string]string)
-		for _, path := range videos {
+		for _, video := range videos {
+			path := video.path
 			relative, err := filepath.Rel(root, path)
 			if err != nil {
 				return fmt.Errorf("resolve TV path %q: %w", path, err)
@@ -242,8 +282,8 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 			sourceKey := episodeSourceKey(entry.Name(), numbers)
 			if existing, duplicate := episodePaths[sourceKey]; duplicate {
 				// Two files claim one episode, which normally means a replacement
-				// encode landed before the old file was removed. Keep the first in
-				// sorted order so the choice does not flip between scans.
+				// encode landed before the old file was removed. Videos are ordered
+				// newest first, so the replacement is already the one in use.
 				s.logger.Warn("episode file skipped", "path", path,
 					"reason", "another file already provides this episode", "using", existing)
 				continue
