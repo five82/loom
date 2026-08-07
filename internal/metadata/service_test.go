@@ -488,6 +488,129 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	}
 }
 
+func TestAutoMatchBackfillsEpisodesAddedAfterTheShowWasMatched(t *testing.T) {
+	var seasonRequests [3]atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tv/100/season/1", func(w http.ResponseWriter, _ *http.Request) {
+		seasonRequests[1].Add(1)
+		_, _ = fmt.Fprint(w, `{"season_number":1,"poster_path":"/season.jpg","episodes":[{"id":501,"episode_number":1,"name":"Pilot"},{"id":502,"episode_number":2,"name":"Second Contact","overview":"They meet again."}]}`)
+	})
+	mux.HandleFunc("/tv/100/season/2", func(w http.ResponseWriter, _ *http.Request) {
+		seasonRequests[2].Add(1)
+		_, _ = fmt.Fprint(w, `{"season_number":2,"poster_path":"/season-two.jpg","episodes":[{"id":511,"episode_number":1,"name":"Return"}]}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	catalog, err := store.Open(filepath.Join(root, "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, SourceKey: "show:Show", Kind: "show", Title: "Show", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, showID, store.MetadataUpdate{TMDBID: 100, Title: "Show"}); err != nil {
+		t.Fatal(err)
+	}
+	// Existing artwork keeps the backfill from making its own provider requests,
+	// so the season requests below can only come from the episode backfill.
+	for _, kind := range []string{"poster", "backdrop", "logo", "thumb"} {
+		placeholderImage(ctx, t, catalog, showID, kind)
+	}
+	episodeIDs := make(map[string]int64)
+	for _, seasonNumber := range []int{1, 2} {
+		seasonID, err := catalog.UpsertItem(ctx, store.ItemInput{
+			LibraryID: libraryID, ParentID: &showID,
+			SourceKey:    fmt.Sprintf("show:Show:season:%d", seasonNumber),
+			Kind:         "season",
+			Title:        fmt.Sprintf("Season %d", seasonNumber),
+			SeasonNumber: seasonNumber, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		placeholderImage(ctx, t, catalog, seasonID, "poster")
+		episodeID, err := catalog.UpsertItem(ctx, store.ItemInput{
+			LibraryID: libraryID, ParentID: &seasonID,
+			SourceKey:    fmt.Sprintf("show:Show:season:%d:episode:1-1", seasonNumber),
+			Kind:         "episode", Title: "Episode 1",
+			SeasonNumber: seasonNumber, EpisodeNumber: 1, EpisodeEndNumber: 1, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		episodeIDs[fmt.Sprintf("s%de1", seasonNumber)] = episodeID
+		if seasonNumber == 1 {
+			// The show was matched while only this episode existed.
+			if err := catalog.UpdateMetadata(ctx, episodeID, store.MetadataUpdate{
+				TMDBID: 501, Title: "Pilot",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			newEpisodeID, err := catalog.UpsertItem(ctx, store.ItemInput{
+				LibraryID: libraryID, ParentID: &seasonID,
+				SourceKey: "show:Show:season:1:episode:2-2", Kind: "episode", Title: "Episode 2",
+				SeasonNumber: 1, EpisodeNumber: 2, EpisodeEndNumber: 2, ScanID: scanID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			episodeIDs["s1e2"] = newEpisodeID
+			continue
+		}
+		if err := catalog.UpdateMetadata(ctx, episodeID, store.MetadataUpdate{
+			TMDBID: 511, Title: "Return",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	client := tmdb.NewWithURLs("key", "en-US", server.URL, server.URL+"/images", server.Client())
+	service := New(catalog, client, filepath.Join(root, "images"), slog.Default())
+	if err := service.AutoMatch(ctx, showID); err != nil {
+		t.Fatal(err)
+	}
+	added, err := catalog.Item(ctx, episodeIDs["s1e2"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added.TMDBID != 502 || added.Title != "Second Contact" || added.Overview != "They meet again." {
+		t.Fatalf("episode added after the match was not backfilled: %+v", added)
+	}
+	if seasonRequests[1].Load() != 1 || seasonRequests[2].Load() != 0 {
+		t.Fatalf("season requests = season 1 %d, season 2 %d; only seasons missing an episode match should be fetched",
+			seasonRequests[1].Load(), seasonRequests[2].Load())
+	}
+
+	if err := service.AutoMatch(ctx, showID); err != nil {
+		t.Fatal(err)
+	}
+	if seasonRequests[1].Load() != 1 {
+		t.Fatalf("a fully matched show fetched season 1 again: %d requests", seasonRequests[1].Load())
+	}
+}
+
+func placeholderImage(ctx context.Context, t *testing.T, catalog *store.Store, itemID int64, kind string) {
+	t.Helper()
+	if _, err := catalog.UpsertImage(ctx, store.Image{
+		ItemID: itemID, Kind: kind, Path: filepath.Join(t.TempDir(), kind+".jpg"),
+		Provider: "tmdb", ProviderPath: "/" + kind + ".jpg", Tag: kind,
+		ContentType: "image/jpeg", Width: 1, Height: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSelectAutomaticMatch(t *testing.T) {
 	tests := []struct {
 		name       string

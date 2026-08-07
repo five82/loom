@@ -79,7 +79,16 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 			}
 			details = &loaded
 		}
-		return s.backfillImages(ctx, item, details)
+		if err := s.backfillImages(ctx, item, details); err != nil {
+			return err
+		}
+		if item.Kind == "show" {
+			// An episode added after the show was matched keeps the placeholder
+			// title the scanner gave it until this runs, because nothing else
+			// revisits a show that already has a match.
+			s.updateEpisodes(ctx, item.ID, item.TMDBID, true)
+		}
+		return nil
 	}
 	mediaType := metadataType(item.Kind)
 	results, err := s.tmdb.Search(ctx, mediaType, item.Title, item.Year)
@@ -209,7 +218,7 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	s.saveDefaultImage(ctx, itemID, "poster", details.PosterPath)
 	s.saveDefaultArtwork(ctx, itemID, mediaType, tmdbID, details.BackdropPath)
 	if item.Kind == "show" {
-		s.updateEpisodes(ctx, itemID, tmdbID)
+		s.updateEpisodes(ctx, itemID, tmdbID, false)
 	}
 	s.logger.Info("metadata match applied", "item_id", itemID, "tmdb_id", tmdbID, "type", mediaType)
 	return nil
@@ -571,7 +580,10 @@ func (s *Service) downloadProviderImage(
 	return s.store.ItemImage(ctx, itemID, kind)
 }
 
-func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64) {
+// updateEpisodes writes TMDB episode metadata for a matched show. missingOnly
+// limits the work to episodes that do not have a match yet, so a scan that adds
+// an episode to an already-matched show only pays for the affected seasons.
+func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64, missingOnly bool) {
 	localEpisodes, err := s.store.EpisodesForShow(ctx, showID)
 	if err != nil {
 		s.logger.Warn("TV episode metadata not updated", "show_id", showID, "error", err)
@@ -579,6 +591,9 @@ func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64) {
 	}
 	bySeason := make(map[int][]store.Item)
 	for _, episode := range localEpisodes {
+		if missingOnly && episode.TMDBID != 0 {
+			continue
+		}
 		bySeason[episode.SeasonNumber] = append(bySeason[episode.SeasonNumber], episode)
 	}
 	for seasonNumber, items := range bySeason {
@@ -588,7 +603,10 @@ func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64) {
 				"season", seasonNumber, "error", err)
 			continue
 		}
-		if items[0].ParentID != nil {
+		// backfillImages already covers season posters on the missingOnly path,
+		// and an episode TMDB never lists would otherwise re-download the poster
+		// on every scan.
+		if !missingOnly && items[0].ParentID != nil {
 			s.saveDefaultImage(ctx, *items[0].ParentID, "poster", season.PosterPath)
 		}
 		byNumber := make(map[int]tmdb.Episode, len(season.Episodes))
