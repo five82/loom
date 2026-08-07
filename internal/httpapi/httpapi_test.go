@@ -563,6 +563,64 @@ func TestImageWidthVariants(t *testing.T) {
 	}
 }
 
+// Scans are triggered over the LAN API so a client or an off-host ingest workflow
+// can pick up new files. The local socket handler must keep serving the same route
+// for the CLI.
+func TestScanTriggerAndStatus(t *testing.T) {
+	catalog, _, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	// A manager with no Run goroutine leaves the first triggered scan queued, which
+	// is what the busy rejection below needs.
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+	local := httptest.NewServer(api.LocalHandler())
+	defer local.Close()
+
+	var status library.ScanStatus
+	if code := getJSON(t, server.URL+"/api/v1/scan", &status); code != http.StatusOK || status.Running {
+		t.Fatalf("initial scan status code=%d status=%+v", code, status)
+	}
+	if code := postScan(t, server.URL, `{"library":"nope"}`); code != http.StatusBadRequest {
+		t.Fatalf("unknown library status = %d, want 400", code)
+	}
+	if code := postScan(t, server.URL, `{"library":"movies"}`); code != http.StatusAccepted {
+		t.Fatalf("scan trigger status = %d, want 202", code)
+	}
+	if code := postScan(t, server.URL, ""); code != http.StatusConflict {
+		t.Fatalf("second scan trigger status = %d, want 409", code)
+	}
+	if code := postScan(t, local.URL, ""); code != http.StatusConflict {
+		t.Fatalf("scan trigger over local handler status = %d, want 409", code)
+	}
+	if code := getJSON(t, server.URL+"/api/v1/scan", &status); code != http.StatusOK || !status.Running {
+		t.Fatalf("running scan status code=%d status=%+v", code, status)
+	}
+}
+
+func postScan(t *testing.T, baseURL, body string) int {
+	t.Helper()
+	response, err := http.Post(baseURL+"/api/v1/scan", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	return response.StatusCode
+}
+
+func getJSON(t *testing.T, url string, value any) int {
+	t.Helper()
+	response, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if err := json.NewDecoder(response.Body).Decode(value); err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode
+}
+
 func testPNG(t *testing.T) []byte {
 	t.Helper()
 	picture := image.NewRGBA(image.Rect(0, 0, 2, 3))

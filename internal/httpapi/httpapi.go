@@ -46,6 +46,12 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	api.public.HandleFunc("GET /api/v1/images/{id}", api.image)
 	api.public.HandleFunc("GET /api/v1/continue-watching", api.continueWatching)
 	api.public.HandleFunc("GET /api/v1/recently-added", api.recentlyAdded)
+	// Scanning is public so a client or an off-host ingest workflow can pick up new
+	// files without waiting for the scheduled scan. A scan is incremental and the
+	// manager runs at most one at a time, so an unauthenticated caller cannot do
+	// more than keep a single scan running.
+	api.public.HandleFunc("POST /api/v1/scan", api.scan)
+	api.public.HandleFunc("GET /api/v1/scan", api.scanStatus)
 	return api
 }
 
@@ -56,7 +62,6 @@ func (a *API) LocalHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_loom/status", a.status)
 	mux.HandleFunc("POST /_loom/stop", a.stop)
-	mux.HandleFunc("POST /_loom/scan", a.scan)
 	mux.HandleFunc("GET /_loom/unmatched", a.unmatched)
 	mux.HandleFunc("GET /_loom/metadata/search", a.metadataSearch)
 	mux.HandleFunc("POST /_loom/metadata/match", a.metadataMatch)
@@ -538,6 +543,10 @@ func (a *API) scan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "library": request.Library})
+}
+
+func (a *API) scanStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, a.scans.Status())
 }
 
 func (a *API) unmatched(w http.ResponseWriter, r *http.Request) {

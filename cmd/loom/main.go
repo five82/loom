@@ -224,7 +224,7 @@ func newScanCommand() *cobra.Command {
 				return daemonctl.ErrNotRunning
 			}
 			var response map[string]any
-			status, err := daemonctl.PostJSON(cfg.SocketPath(), "/_loom/scan",
+			status, err := daemonctl.PostJSON(cfg.SocketPath(), "/api/v1/scan",
 				map[string]string{"library": library}, &response)
 			if err != nil {
 				return err

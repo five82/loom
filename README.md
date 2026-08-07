@@ -105,6 +105,19 @@ loom scan shorts
 loom scan tv
 ```
 
+Scans can also be started over the LAN API, so a client or an ingest workflow on
+another host can pick up new files without waiting for the scheduled scan:
+
+```bash
+curl -X POST http://loom:8097/api/v1/scan -d '{"library":"movies"}'
+curl http://loom:8097/api/v1/scan
+```
+
+An empty or omitted body scans every library. The trigger returns `202 Accepted`
+and the scan runs in the background; poll `GET /api/v1/scan` for the running
+library, start and end times, and the last error. Triggering a scan while one is
+running returns `409 Conflict`.
+
 Only one manual or scheduled scan runs at a time. Scans are incremental:
 unchanged files are not probed again. New movies and shows are automatically
 matched when TMDB returns one exact title/year match, or when one exact match
@@ -191,6 +204,8 @@ GET  /api/v1/images/{image-id}?tag={image-tag}&width={pixels}
 PUT  /api/v1/items/{id}/progress
 GET  /api/v1/continue-watching
 GET  /api/v1/recently-added
+POST /api/v1/scan
+GET  /api/v1/scan
 ```
 
 Media responses support `HEAD` and HTTP byte ranges. Playback responses include
