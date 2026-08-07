@@ -531,32 +531,37 @@ WHERE i.library_id = ? AND i.available = 1`, libraryID).Scan(&count)
 
 // Item is the API-facing catalog representation.
 type Item struct {
-	ID               int64      `json:"id"`
-	LibraryID        int64      `json:"library_id"`
-	ParentID         *int64     `json:"parent_id,omitempty"`
-	Kind             string     `json:"kind"`
-	Title            string     `json:"title"`
-	Year             int        `json:"year,omitempty"`
-	SeasonNumber     int        `json:"season_number,omitempty"`
-	EpisodeNumber    int        `json:"episode_number,omitempty"`
-	EpisodeEndNumber int        `json:"episode_end_number,omitempty"`
-	TMDBID           int64      `json:"tmdb_id,omitempty"`
-	Overview         string     `json:"overview,omitempty"`
-	ReleaseDate      string     `json:"release_date,omitempty"`
-	Genres           []Genre    `json:"genres,omitempty"`
-	GenresLoaded     bool       `json:"-"`
-	PosterImageID    int64      `json:"poster_image_id,omitempty"`
-	PosterImageTag   string     `json:"poster_image_tag,omitempty"`
-	BackdropImageID  int64      `json:"backdrop_image_id,omitempty"`
-	BackdropImageTag string     `json:"backdrop_image_tag,omitempty"`
-	LogoImageID      int64      `json:"logo_image_id,omitempty"`
-	LogoImageTag     string     `json:"logo_image_tag,omitempty"`
-	ThumbImageID     int64      `json:"thumb_image_id,omitempty"`
-	ThumbImageTag    string     `json:"thumb_image_tag,omitempty"`
-	AddedAt          string     `json:"added_at"`
-	UpdatedAt        string     `json:"updated_at"`
-	Media            *MediaFile `json:"media,omitempty"`
-	Progress         *Progress  `json:"progress,omitempty"`
+	ID               int64   `json:"id"`
+	LibraryID        int64   `json:"library_id"`
+	ParentID         *int64  `json:"parent_id,omitempty"`
+	Kind             string  `json:"kind"`
+	Title            string  `json:"title"`
+	Year             int     `json:"year,omitempty"`
+	SeasonNumber     int     `json:"season_number,omitempty"`
+	EpisodeNumber    int     `json:"episode_number,omitempty"`
+	EpisodeEndNumber int     `json:"episode_end_number,omitempty"`
+	TMDBID           int64   `json:"tmdb_id,omitempty"`
+	Overview         string  `json:"overview,omitempty"`
+	ReleaseDate      string  `json:"release_date,omitempty"`
+	Genres           []Genre `json:"genres,omitempty"`
+	GenresLoaded     bool    `json:"-"`
+	PosterImageID    int64   `json:"poster_image_id,omitempty"`
+	PosterImageTag   string  `json:"poster_image_tag,omitempty"`
+	BackdropImageID  int64   `json:"backdrop_image_id,omitempty"`
+	BackdropImageTag string  `json:"backdrop_image_tag,omitempty"`
+	LogoImageID      int64   `json:"logo_image_id,omitempty"`
+	LogoImageTag     string  `json:"logo_image_tag,omitempty"`
+	ThumbImageID     int64   `json:"thumb_image_id,omitempty"`
+	ThumbImageTag    string  `json:"thumb_image_tag,omitempty"`
+	// MediaTag identifies the file version the last scan recorded, so a client
+	// browsing the catalog can tell that a replacement encode landed without
+	// asking for playback details item by item. Nothing else about an item
+	// changes when its file is replaced.
+	MediaTag  string     `json:"media_tag,omitempty"`
+	AddedAt   string     `json:"added_at"`
+	UpdatedAt string     `json:"updated_at"`
+	Media     *MediaFile `json:"media,omitempty"`
+	Progress  *Progress  `json:"progress,omitempty"`
 }
 
 const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
@@ -606,6 +611,9 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
         (SELECT tag FROM images WHERE item_id = CASE
             WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
             WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'thumb'), ''),
+    COALESCE((SELECT id FROM media_files WHERE item_id = i.id), 0),
+    COALESCE((SELECT size FROM media_files WHERE item_id = i.id), 0),
+    COALESCE((SELECT mtime_ns FROM media_files WHERE item_id = i.id), 0),
     i.added_at, i.updated_at`
 
 type ListOptions struct {
@@ -752,18 +760,23 @@ func scanItem(row rowScanner) (Item, error) {
 func scanItemFields(row rowScanner, trailing ...any) (Item, error) {
 	var item Item
 	var parent sql.NullInt64
+	var mediaID, mediaSize, mediaMTimeNS int64
 	destinations := []any{
 		&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title, &item.Year,
 		&item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber, &item.TMDBID,
 		&item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID, &item.PosterImageTag,
 		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
-		&item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag, &item.AddedAt, &item.UpdatedAt,
+		&item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag,
+		&mediaID, &mediaSize, &mediaMTimeNS, &item.AddedAt, &item.UpdatedAt,
 	}
 	if err := row.Scan(append(destinations, trailing...)...); err != nil {
 		return Item{}, fmt.Errorf("scan item: %w", err)
 	}
 	if parent.Valid {
 		item.ParentID = &parent.Int64
+	}
+	if mediaID != 0 {
+		item.MediaTag = MediaTag(mediaID, mediaSize, mediaMTimeNS)
 	}
 	return item, nil
 }
@@ -985,22 +998,12 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 	defer func() { _ = rows.Close() }()
 	var result []Item
 	for rows.Next() {
-		var item Item
-		var parent sql.NullInt64
 		var position, duration int64
 		var played bool
 		var updated string
-		if err := rows.Scan(&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title,
-			&item.Year, &item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber,
-			&item.TMDBID, &item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID,
-			&item.PosterImageTag, &item.BackdropImageID, &item.BackdropImageTag,
-			&item.LogoImageID, &item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag,
-			&item.AddedAt, &item.UpdatedAt,
-			&position, &duration, &played, &updated); err != nil {
+		item, err := scanItemFields(rows, &position, &duration, &played, &updated)
+		if err != nil {
 			return nil, fmt.Errorf("scan continue-watching item: %w", err)
-		}
-		if parent.Valid {
-			item.ParentID = &parent.Int64
 		}
 		item.Progress = makeProgress(position, duration, played, updated)
 		result = append(result, item)

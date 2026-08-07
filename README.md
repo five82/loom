@@ -234,6 +234,12 @@ versions. An offline download is always a full-size copy of the original source
 because Loom never transcodes, remuxes, or creates quality variants. The API
 never accepts a filesystem path from a client.
 
+Items also carry `media_tag`, the file version recorded by the last scan. A
+replacement encode changes nothing else about an item, so without it a client
+holding an offline copy cannot tell that the file behind a title changed short of
+requesting playback details for every item. The playback endpoint reads the file
+as it is on disk and stays authoritative; `media_tag` lags until the next scan.
+
 Select one of the provider paths returned by the image-options endpoint:
 
 ```json

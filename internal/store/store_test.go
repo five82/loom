@@ -59,6 +59,16 @@ func TestCatalogAndProgress(t *testing.T) {
 		t.Fatalf("technical metadata was not persisted: %+v", item.Media.Streams)
 	}
 
+	// Replacing an encode changes nothing else about an item, so the browse
+	// listing has to carry the media version a client can compare against.
+	listed, err := catalog.ListItems(ctx, ListOptions{LibraryKind: "movies", TopLevel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Media.Tag == "" || len(listed) != 1 || listed[0].MediaTag != item.Media.Tag {
+		t.Fatalf("browse listing did not expose media version %q: %+v", item.Media.Tag, listed)
+	}
+
 	progress, err := catalog.SetProgress(ctx, itemID, 60_000, 600_000)
 	if err != nil {
 		t.Fatal(err)
