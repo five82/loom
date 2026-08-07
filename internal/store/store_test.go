@@ -957,3 +957,137 @@ func TestListItemsCarryProgress(t *testing.T) {
 		t.Fatalf("untouched episode reported progress: %+v", listed[2].Progress)
 	}
 }
+
+func TestShowAndSeasonWatchedCounts(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	// Season one holds two episodes, season two holds one.
+	counts := []int{2, 1}
+	seed := func(scanID, libraryID int64, skip string) (showID int64, seasons, episodes []int64) {
+		showID, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, SourceKey: "Show", Kind: "show", Title: "Show", ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for season, episodeCount := range counts {
+			season++
+			seasonID, err := catalog.UpsertItem(ctx, ItemInput{
+				LibraryID: libraryID, ParentID: &showID,
+				SourceKey: fmt.Sprintf("Show/season-%d", season), Kind: "season",
+				Title: fmt.Sprintf("Season %d", season), SeasonNumber: season, ScanID: scanID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seasons = append(seasons, seasonID)
+			for number := 1; number <= episodeCount; number++ {
+				key := fmt.Sprintf("Show/S%02dE%02d", season, number)
+				if key == skip {
+					continue
+				}
+				id, err := catalog.UpsertItem(ctx, ItemInput{
+					LibraryID: libraryID, ParentID: &seasonID, SourceKey: key, Kind: "episode",
+					Title: key, SeasonNumber: season, EpisodeNumber: number, ScanID: scanID,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := catalog.UpsertMedia(ctx, MediaFile{
+					ItemID: id, Path: "/tv/" + key + ".mkv", Size: 100, MTimeNS: 20,
+					DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
+				}, nil); err != nil {
+					t.Fatal(err)
+				}
+				episodes = append(episodes, id)
+			}
+		}
+		return showID, seasons, episodes
+	}
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, _, episodes := seed(scanID, libraryID, "")
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 3, 3, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	shows, err := catalog.ListItems(ctx, ListOptions{TopLevel: true, Kind: "show"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shows) != 1 || shows[0].EpisodeCount != 3 || shows[0].UnwatchedCount != 3 {
+		t.Fatalf("unwatched show counts = %+v", shows)
+	}
+
+	// Watching one episode leaves the rest of the show and its season unwatched.
+	if _, err := catalog.SetPlayed(ctx, episodes[0]); err != nil {
+		t.Fatal(err)
+	}
+	show, err := catalog.Item(ctx, showID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if show.EpisodeCount != 3 || show.UnwatchedCount != 2 {
+		t.Fatalf("show counts after one episode = %d/%d, want 3/2", show.EpisodeCount, show.UnwatchedCount)
+	}
+	listedSeasons, err := catalog.SeasonsForShow(ctx, showID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listedSeasons) != 2 {
+		t.Fatalf("seasons = %+v", listedSeasons)
+	}
+	if listedSeasons[0].EpisodeCount != 2 || listedSeasons[0].UnwatchedCount != 1 {
+		t.Fatalf("season one counts = %d/%d, want 2/1",
+			listedSeasons[0].EpisodeCount, listedSeasons[0].UnwatchedCount)
+	}
+	if listedSeasons[1].EpisodeCount != 1 || listedSeasons[1].UnwatchedCount != 1 {
+		t.Fatalf("season two counts = %d/%d, want 1/1",
+			listedSeasons[1].EpisodeCount, listedSeasons[1].UnwatchedCount)
+	}
+
+	// Marking the show played empties both rollups, and an episode of it never
+	// claims episodes of its own.
+	if _, err := catalog.SetPlayed(ctx, showID); err != nil {
+		t.Fatal(err)
+	}
+	if show, err = catalog.Item(ctx, showID); err != nil {
+		t.Fatal(err)
+	} else if show.EpisodeCount != 3 || show.UnwatchedCount != 0 {
+		t.Fatalf("watched show counts = %d/%d, want 3/0", show.EpisodeCount, show.UnwatchedCount)
+	}
+	episode, err := catalog.Item(ctx, episodes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.EpisodeCount != 0 || episode.UnwatchedCount != 0 {
+		t.Fatalf("episode carried rollup counts: %d/%d", episode.EpisodeCount, episode.UnwatchedCount)
+	}
+
+	// An episode whose file disappeared drops out of both counts rather than
+	// leaving a show that can never be finished.
+	if _, err := catalog.ClearPlayback(ctx, episodes[1]); err != nil {
+		t.Fatal(err)
+	}
+	_, scanID, err = catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed(scanID, libraryID, "Show/S01E02")
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if show, err = catalog.Item(ctx, showID); err != nil {
+		t.Fatal(err)
+	} else if show.EpisodeCount != 2 || show.UnwatchedCount != 0 {
+		t.Fatalf("counts after a removal = %d/%d, want 2/0", show.EpisodeCount, show.UnwatchedCount)
+	}
+}

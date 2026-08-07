@@ -569,6 +569,12 @@ type Item struct {
 	UpdatedAt string     `json:"updated_at"`
 	Media     *MediaFile `json:"media,omitempty"`
 	Progress  *Progress  `json:"progress,omitempty"`
+	// EpisodeCount and UnwatchedCount roll episode playback state up to the show
+	// and season rows that a grid actually draws, so a client can badge a show
+	// with what is left to watch without walking down to every episode. Both stay
+	// zero for kinds that have no episodes beneath them.
+	EpisodeCount   int `json:"episode_count,omitempty"`
+	UnwatchedCount int `json:"unwatched_count,omitempty"`
 }
 
 const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
@@ -621,7 +627,20 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
     COALESCE((SELECT id FROM media_files WHERE item_id = i.id), 0),
     COALESCE((SELECT size FROM media_files WHERE item_id = i.id), 0),
     COALESCE((SELECT mtime_ns FROM media_files WHERE item_id = i.id), 0),
-    i.added_at, i.updated_at`
+    i.added_at, i.updated_at,
+    CASE WHEN i.kind IN ('show', 'season') THEN (
+        SELECT COUNT(*) FROM items e
+        WHERE e.kind = 'episode' AND e.available = 1 AND `+episodesBelow+`) ELSE 0 END,
+    CASE WHEN i.kind IN ('show', 'season') THEN (
+        SELECT COUNT(*) FROM items e
+        LEFT JOIN playback_state p ON p.item_id = e.id
+        WHERE e.kind = 'episode' AND e.available = 1 AND COALESCE(p.played, 0) = 0
+            AND `+episodesBelow+`) ELSE 0 END`
+
+// episodesBelow matches the episodes under the item row `i`, whether that row is
+// the season holding them or the show holding the season.
+const episodesBelow = `(e.parent_id = i.id
+    OR e.parent_id IN (SELECT s.id FROM items s WHERE s.parent_id = i.id AND s.kind = 'season'))`
 
 type ListOptions struct {
 	LibraryKind string
@@ -788,6 +807,7 @@ func scanItemFields(row rowScanner, trailing ...any) (Item, error) {
 		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
 		&item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag,
 		&mediaID, &mediaSize, &mediaMTimeNS, &item.AddedAt, &item.UpdatedAt,
+		&item.EpisodeCount, &item.UnwatchedCount,
 	}
 	if err := row.Scan(append(destinations, trailing...)...); err != nil {
 		return Item{}, fmt.Errorf("scan item: %w", err)

@@ -279,6 +279,12 @@ Browse listings carry `progress` for any item that has been played, so a client
 showing a season can mark watched episodes without a request per episode. Items
 with no playback history omit the field.
 
+Shows and seasons carry `episode_count` and `unwatched_count`, counting only
+episodes that are still on disk, so a grid can badge a series with what is left
+to watch without walking down to every episode. Both fields are omitted where
+they would be zero, so a fully watched show reports no `unwatched_count` and
+movies and episodes report neither.
+
 Select one of the provider paths returned by the image-options endpoint:
 
 ```json
