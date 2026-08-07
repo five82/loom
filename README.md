@@ -190,6 +190,19 @@ Loom recognizes `SxxEyy` and `SxxEyy-zz`, including season zero specials and
 season numbers longer than two digits. Videos without an episode identifier are
 cataloged as unmatched.
 
+Replacing a file with a new encode is expected. A movie is identified by its
+first-level directory name and an episode by its season and episode numbers, so
+a replacement file can be named anything and the TMDB match, artwork selection,
+and playback state carry over. Renaming a movie directory, or changing an
+episode's numbers, creates a new item and leaves the old state behind. Unmatched
+videos are still identified by filename because they have no episode numbers to
+key on.
+
+Remove the old file as part of the swap. A movie directory holding two videos is
+skipped, so the movie drops out of the catalog until only one remains. When two
+files claim one episode, the first in sorted order is used and the other is
+logged.
+
 NFO files, local artwork, external subtitle files, and movie extras are ignored.
 Embedded stream details are reported from `ffprobe`, including video and audio
 codecs, resolution, HDR/Dolby Vision classification, audio channel layout, and

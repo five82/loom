@@ -200,6 +200,7 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 			return err
 		}
 		seasonIDs := make(map[int]int64)
+		episodePaths := make(map[string]string)
 		for _, path := range videos {
 			relative, err := filepath.Rel(root, path)
 			if err != nil {
@@ -235,9 +236,22 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 				}
 				seasonIDs[numbers.Season] = seasonID
 			}
+			// An episode is identified by its number rather than its filename so a
+			// replacement encode under a new name keeps the same item, and with it
+			// the TMDB match and playback state.
+			sourceKey := episodeSourceKey(entry.Name(), numbers)
+			if existing, duplicate := episodePaths[sourceKey]; duplicate {
+				// Two files claim one episode, which normally means a replacement
+				// encode landed before the old file was removed. Keep the first in
+				// sorted order so the choice does not flip between scans.
+				s.logger.Warn("episode file skipped", "path", path,
+					"reason", "another file already provides this episode", "using", existing)
+				continue
+			}
+			episodePaths[sourceKey] = path
 			parentID := seasonID
 			itemID, err := s.store.UpsertItem(ctx, store.ItemInput{
-				LibraryID: libraryID, ParentID: &parentID, SourceKey: "file:" + relative,
+				LibraryID: libraryID, ParentID: &parentID, SourceKey: sourceKey,
 				Kind: "episode", Title: episodeTitle(numbers), SeasonNumber: numbers.Season,
 				EpisodeNumber: numbers.Start, EpisodeEndNumber: numbers.End, ScanID: scanID,
 			})
@@ -263,6 +277,12 @@ func (s *Scanner) autoMatch(ctx context.Context, itemID int64, counters *scanCou
 		counters.metadataFailed = true
 		s.logger.Warn("automatic metadata matching paused for this library scan", "item_id", itemID, "error", err)
 	}
+}
+
+// episodeSourceKey extends the season key so an episode's catalog identity is
+// its position in the show rather than the file that currently provides it.
+func episodeSourceKey(showDir string, numbers episodeNumbers) string {
+	return fmt.Sprintf("show:%s:season:%d:episode:%d-%d", showDir, numbers.Season, numbers.Start, numbers.End)
 }
 
 func seasonTitle(number int) string {

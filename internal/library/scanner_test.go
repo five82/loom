@@ -127,11 +127,147 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 
 func writeTestFile(t *testing.T, path string) {
 	t.Helper()
+	writeTestFileContent(t, path, "video")
+}
+
+func writeTestFileContent(t *testing.T, path, content string) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// newTVScanner prepares a scanner over a TV library alone. Movie and short film
+// roots are never read because these tests only scan "tv".
+func newTVScanner(t *testing.T, root string) (*store.Store, *Scanner) {
+	t.Helper()
+	catalog, err := store.Open(filepath.Join(root, "state", "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	scanner := NewScanner(catalog, &fakeProber{}, nil,
+		filepath.Join(root, "movies"), filepath.Join(root, "shorts"), filepath.Join(root, "tv"),
+		slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	return catalog, scanner
+}
+
+// tvEpisodes returns the episodes of the one show a test staged.
+func tvEpisodes(t *testing.T, catalog *store.Store) []store.Item {
+	t.Helper()
+	ctx := context.Background()
+	shows, err := catalog.ListItems(ctx, store.ListOptions{LibraryKind: "tv", TopLevel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shows) != 1 {
+		t.Fatalf("shows = %d, want 1", len(shows))
+	}
+	seasons, err := catalog.ListItems(ctx, store.ListOptions{ParentID: &shows[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seasons) != 1 {
+		t.Fatalf("seasons = %d, want 1", len(seasons))
+	}
+	episodes, err := catalog.ListItems(ctx, store.ListOptions{ParentID: &seasons[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return episodes
+}
+
+func TestEpisodeSurvivesReplacementEncode(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	season := filepath.Join(root, "tv", "The Office (US)", "Season 4")
+	original := filepath.Join(season, "The Office (US) - S04E01 - Fun Run.mkv")
+	writeTestFile(t, original)
+	catalog, scanner := newTVScanner(t, root)
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+	episodes := tvEpisodes(t, catalog)
+	if len(episodes) != 1 {
+		t.Fatalf("episodes = %+v, want 1", episodes)
+	}
+	before := episodes[0]
+	if _, err := catalog.SetProgress(ctx, before.ID, 120_000, 600_000); err != nil {
+		t.Fatal(err)
+	}
+
+	// Swap the h264 encode for an AV1 one under a new filename, the way a
+	// re-encode pipeline normally names its output.
+	if err := os.Remove(original); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(season, "The Office (US) - S04E01 - Fun Run [AV1 2160p].mkv")
+	writeTestFileContent(t, replacement, "a considerably larger av1 encode")
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+
+	episodes = tvEpisodes(t, catalog)
+	if len(episodes) != 1 {
+		t.Fatalf("episodes after replacement = %+v, want 1", episodes)
+	}
+	after := episodes[0]
+	if after.ID != before.ID {
+		t.Fatalf("replacement encode created a new episode: %d became %d", before.ID, after.ID)
+	}
+	if after.MediaTag == "" || after.MediaTag == before.MediaTag {
+		t.Fatalf("media version did not change: %q", after.MediaTag)
+	}
+	item, err := catalog.Item(ctx, after.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Progress == nil || item.Progress.ResumePositionMS != 120_000 {
+		t.Fatalf("replacement encode lost playback state: %+v", item.Progress)
+	}
+	if item.Media == nil || filepath.Base(item.Media.Path) != filepath.Base(replacement) {
+		t.Fatalf("catalog still points at the replaced file: %+v", item.Media)
+	}
+}
+
+func TestDuplicateEpisodeFilesResolveToOneEpisode(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	season := filepath.Join(root, "tv", "The Office (US)", "Season 4")
+	replaced := filepath.Join(season, "The Office (US) - S04E01 - Fun Run.mkv")
+	replacement := filepath.Join(season, "The Office (US) - S04E01 - Fun Run [AV1].mkv")
+	writeTestFile(t, replaced)
+	writeTestFileContent(t, replacement, "replacement")
+	catalog, scanner := newTVScanner(t, root)
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+	episodes := tvEpisodes(t, catalog)
+	if len(episodes) != 1 {
+		t.Fatalf("episodes = %+v, want 1", episodes)
+	}
+	first, err := catalog.Item(ctx, episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The choice must not alternate between scans while both files are present.
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+	episodes = tvEpisodes(t, catalog)
+	if len(episodes) != 1 {
+		t.Fatalf("episodes after rescan = %+v, want 1", episodes)
+	}
+	second, err := catalog.Item(ctx, episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Media == nil || second.Media == nil || first.Media.Path != second.Media.Path {
+		t.Fatalf("episode file flipped between scans: %+v then %+v", first.Media, second.Media)
 	}
 }
 

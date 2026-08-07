@@ -83,7 +83,7 @@ func (s *Store) ensureSchema() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version == 7 {
+	if version == 8 {
 		return nil
 	}
 	if version != 0 {
@@ -193,7 +193,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
