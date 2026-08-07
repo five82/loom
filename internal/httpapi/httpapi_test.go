@@ -50,6 +50,12 @@ func TestMediaDownloadMetadataAndVersionedResponses(t *testing.T) {
 		playback.Media.Filename != "Movie.mkv" || playback.Media.Tag == "" {
 		t.Fatalf("playback download metadata status=%d response=%+v", response.StatusCode, playback)
 	}
+	// The player builds its chapter menu from what playback returns, so the
+	// marks have to ride along with the stream URL rather than needing a
+	// second request.
+	if len(playback.Media.Chapters) != 2 || playback.Media.Chapters[1].StartMS != 264_264 {
+		t.Fatalf("playback response omitted chapters: %+v", playback.Media.Chapters)
+	}
 	wantStreamURL := "/api/v1/media/" + strconv.FormatInt(mediaID, 10) + "?tag=" + playback.Media.Tag
 	if playback.StreamURL != wantStreamURL {
 		t.Fatalf("stream URL = %q, want %q", playback.StreamURL, wantStreamURL)
@@ -283,6 +289,10 @@ func TestItemTechnicalMetadata(t *testing.T) {
 	if video.Codec != "hevc" || video.Profile != "Main 10" || video.DynamicRange != "hdr" ||
 		audio.Codec != "opus" || audio.ChannelLayout != "7.1" {
 		t.Fatalf("unexpected technical metadata: %+v", item.Media.Streams)
+	}
+	if len(item.Media.Chapters) != 2 || item.Media.Chapters[0].Title != "Opening" ||
+		item.Media.Chapters[1].StartMS != 264_264 {
+		t.Fatalf("unexpected chapters: %+v", item.Media.Chapters)
 	}
 }
 
@@ -724,7 +734,10 @@ func testCatalog(t *testing.T) (*store.Store, int64, int64, []byte) {
 	}, {
 		Index: 1, Kind: "audio", Codec: "opus", Channels: 8, ChannelLayout: "7.1",
 		IsDefault: true,
-	}})
+	}}, []store.Chapter{
+		{Index: 0, StartMS: 0, Title: "Opening"},
+		{Index: 1, StartMS: 264_264},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

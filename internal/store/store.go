@@ -83,7 +83,7 @@ func (s *Store) ensureSchema() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version == 8 {
+	if version == 9 {
 		return nil
 	}
 	if version != 0 {
@@ -170,6 +170,14 @@ CREATE TABLE media_streams (
     is_forced INTEGER NOT NULL DEFAULT 0,
     UNIQUE (media_file_id, stream_index)
 );
+CREATE TABLE media_chapters (
+    id INTEGER PRIMARY KEY,
+    media_file_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE CASCADE,
+    chapter_index INTEGER NOT NULL,
+    start_ms INTEGER NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    UNIQUE (media_file_id, chapter_index)
+);
 CREATE TABLE images (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
@@ -193,7 +201,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -395,18 +403,19 @@ RETURNING id`, item.LibraryID, item.ParentID, item.SourceKey, item.Kind, item.Ti
 
 // MediaFile is a directly playable source file.
 type MediaFile struct {
-	ID             int64    `json:"id"`
-	ItemID         int64    `json:"item_id"`
-	Path           string   `json:"-"`
-	Filename       string   `json:"filename"`
-	Size           int64    `json:"size"`
-	Tag            string   `json:"tag"`
-	MTimeNS        int64    `json:"-"`
-	DurationMS     int64    `json:"duration_ms"`
-	Container      string   `json:"container"`
-	ProbeError     string   `json:"probe_error,omitempty"`
-	LastSeenScanID int64    `json:"-"`
-	Streams        []Stream `json:"streams,omitempty"`
+	ID             int64     `json:"id"`
+	ItemID         int64     `json:"item_id"`
+	Path           string    `json:"-"`
+	Filename       string    `json:"filename"`
+	Size           int64     `json:"size"`
+	Tag            string    `json:"tag"`
+	MTimeNS        int64     `json:"-"`
+	DurationMS     int64     `json:"duration_ms"`
+	Container      string    `json:"container"`
+	ProbeError     string    `json:"probe_error,omitempty"`
+	LastSeenScanID int64     `json:"-"`
+	Streams        []Stream  `json:"streams,omitempty"`
+	Chapters       []Chapter `json:"chapters,omitempty"`
 }
 
 // MediaTag identifies a scanner-observed file version without reading and
@@ -442,6 +451,15 @@ type Stream struct {
 	IsForced      bool   `json:"is_forced"`
 }
 
+// Chapter is a seek target embedded in the container. Titles are routinely
+// generic ("Chapter 01") because disc rips do not name their marks, so a client
+// should be prepared to label a chapter by its number and start time alone.
+type Chapter struct {
+	Index   int    `json:"index"`
+	StartMS int64  `json:"start_ms"`
+	Title   string `json:"title,omitempty"`
+}
+
 func (s *Store) MediaByPath(ctx context.Context, path string) (*MediaFile, error) {
 	var media MediaFile
 	err := s.db.QueryRowContext(ctx, `
@@ -474,7 +492,7 @@ func (s *Store) TouchMedia(ctx context.Context, itemID, scanID int64) error {
 	return nil
 }
 
-func (s *Store) UpsertMedia(ctx context.Context, media MediaFile, streams []Stream) (int64, error) {
+func (s *Store) UpsertMedia(ctx context.Context, media MediaFile, streams []Stream, chapters []Chapter) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("upsert media transaction: %w", err)
@@ -517,6 +535,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, stream.Index, stream.Kin
 			stream.Channels, stream.ChannelLayout, stream.DynamicRange, stream.IsDefault,
 			stream.IsForced); err != nil {
 			return 0, fmt.Errorf("insert media stream: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM media_chapters WHERE media_file_id = ?`, id); err != nil {
+		return 0, fmt.Errorf("replace media chapters: %w", err)
+	}
+	for _, chapter := range chapters {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO media_chapters(media_file_id, chapter_index, start_ms, title)
+VALUES (?, ?, ?, ?)`, id, chapter.Index, chapter.StartMS, chapter.Title); err != nil {
+			return 0, fmt.Errorf("insert media chapter: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -630,12 +658,12 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
     i.added_at, i.updated_at,
     CASE WHEN i.kind IN ('show', 'season') THEN (
         SELECT COUNT(*) FROM items e
-        WHERE e.kind = 'episode' AND e.available = 1 AND `+episodesBelow+`) ELSE 0 END,
+        WHERE e.kind = 'episode' AND e.available = 1 AND ` + episodesBelow + `) ELSE 0 END,
     CASE WHEN i.kind IN ('show', 'season') THEN (
         SELECT COUNT(*) FROM items e
         LEFT JOIN playback_state p ON p.item_id = e.id
         WHERE e.kind = 'episode' AND e.available = 1 AND COALESCE(p.played, 0) = 0
-            AND `+episodesBelow+`) ELSE 0 END`
+            AND ` + episodesBelow + `) ELSE 0 END`
 
 // episodesBelow matches the episodes under the item row `i`, whether that row is
 // the season holding them or the show holding the season.
@@ -906,6 +934,11 @@ FROM media_files WHERE item_id = ?`, itemID).Scan(&media.ID, &media.ItemID, &med
 		return nil, err
 	}
 	media.Streams = streams
+	chapters, err := s.chapters(ctx, media.ID)
+	if err != nil {
+		return nil, err
+	}
+	media.Chapters = chapters
 	return &media, nil
 }
 
@@ -949,6 +982,25 @@ FROM media_streams WHERE media_file_id = ? ORDER BY stream_index`, mediaID)
 		streams = append(streams, stream)
 	}
 	return streams, rows.Err()
+}
+
+func (s *Store) chapters(ctx context.Context, mediaID int64) ([]Chapter, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT chapter_index, start_ms, title
+FROM media_chapters WHERE media_file_id = ? ORDER BY chapter_index`, mediaID)
+	if err != nil {
+		return nil, fmt.Errorf("list media chapters: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var chapters []Chapter
+	for rows.Next() {
+		var chapter Chapter
+		if err := rows.Scan(&chapter.Index, &chapter.StartMS, &chapter.Title); err != nil {
+			return nil, fmt.Errorf("scan media chapter: %w", err)
+		}
+		chapters = append(chapters, chapter)
+	}
+	return chapters, rows.Err()
 }
 
 // Progress is global because Loom currently has one implicit user.

@@ -251,6 +251,13 @@ versions. An offline download is always a full-size copy of the original source
 because Loom never transcodes, remuxes, or creates quality variants. The API
 never accepts a filesystem path from a client.
 
+Item and playback responses carry the `chapters` embedded in the file, each with
+a start offset in milliseconds and, when the container names it, a title. Disc
+rips routinely leave the marks unnamed, so a client should be ready to label a
+chapter by its number alone. Files with no chapters, and files whose single
+chapter spans the whole runtime, omit the field because neither offers anywhere
+to navigate to.
+
 Items also carry `media_tag`, the file version recorded by the last scan. A
 replacement encode changes nothing else about an item, so without it a client
 holding an offline copy cannot tell that the file behind a title changed short of

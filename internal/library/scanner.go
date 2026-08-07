@@ -365,7 +365,7 @@ func (s *Scanner) scanMedia(ctx context.Context, itemID, scanID int64, path stri
 		media.ProbeError = probeErr.Error()
 		s.logger.Warn("media probe failed", "path", path, "error", probeErr)
 	}
-	if _, err := s.store.UpsertMedia(ctx, media, probe.Streams); err != nil {
+	if _, err := s.store.UpsertMedia(ctx, media, probe.Streams, probe.Chapters); err != nil {
 		return err
 	}
 	return nil

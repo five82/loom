@@ -18,6 +18,7 @@ type ProbeResult struct {
 	DurationMS int64
 	Container  string
 	Streams    []store.Stream
+	Chapters   []store.Chapter
 }
 
 // Prober inspects a media file without modifying it.
@@ -38,7 +39,8 @@ func (p *FFProber) Probe(ctx context.Context, path string) (ProbeResult, error) 
 	probeCtx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
 	output, err := exec.CommandContext(probeCtx, p.Command,
-		"-v", "error", "-show_format", "-show_streams", "-of", "json", path).Output()
+		"-v", "error", "-show_format", "-show_streams", "-show_chapters",
+		"-of", "json", path).Output()
 	if err != nil {
 		if probeCtx.Err() != nil {
 			return ProbeResult{}, fmt.Errorf("ffprobe %q: %w", path, probeCtx.Err())
@@ -87,6 +89,12 @@ type probeJSON struct {
 			AttachedPic int `json:"attached_pic"`
 		} `json:"disposition"`
 	} `json:"streams"`
+	Chapters []struct {
+		StartTime string `json:"start_time"`
+		Tags      struct {
+			Title string `json:"title"`
+		} `json:"tags"`
+	} `json:"chapters"`
 }
 
 func parseProbeOutput(data []byte) (ProbeResult, error) {
@@ -119,7 +127,27 @@ func parseProbeOutput(data []byte) (ProbeResult, error) {
 			result.DurationMS = durationMS(rawStream.Duration)
 		}
 	}
+	result.Chapters = chapters(raw)
 	return result, nil
+}
+
+// chapters keeps ffprobe's file order and numbers marks from there, so a client
+// can present "chapter 3" without re-deriving it. A file whose only chapter
+// spans the whole runtime carries no navigable structure, so it is dropped
+// rather than handed to every client to filter out.
+func chapters(raw probeJSON) []store.Chapter {
+	if len(raw.Chapters) < 2 {
+		return nil
+	}
+	list := make([]store.Chapter, 0, len(raw.Chapters))
+	for index, rawChapter := range raw.Chapters {
+		list = append(list, store.Chapter{
+			Index:   index,
+			StartMS: durationMS(rawChapter.StartTime),
+			Title:   rawChapter.Tags.Title,
+		})
+	}
+	return list
 }
 
 func dynamicRange(codecTag, colorTransfer string, sideData []probeSideData) string {

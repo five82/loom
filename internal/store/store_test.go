@@ -39,7 +39,10 @@ func TestCatalogAndProgress(t *testing.T) {
 		Width: 3840, Height: 1604, DynamicRange: "hdr", IsDefault: true,
 	}, {
 		Index: 1, Kind: "audio", Codec: "opus", Channels: 8, ChannelLayout: "7.1",
-	}})
+	}}, []Chapter{
+		{Index: 0, StartMS: 0, Title: "Opening"},
+		{Index: 1, StartMS: 264_264},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +61,10 @@ func TestCatalogAndProgress(t *testing.T) {
 	if video.Profile != "Main 10" || video.DynamicRange != "hdr" ||
 		audio.ChannelLayout != "7.1" {
 		t.Fatalf("technical metadata was not persisted: %+v", item.Media.Streams)
+	}
+	if len(item.Media.Chapters) != 2 || item.Media.Chapters[0].Title != "Opening" ||
+		item.Media.Chapters[1].StartMS != 264_264 {
+		t.Fatalf("chapters were not persisted: %+v", item.Media.Chapters)
 	}
 
 	// Replacing an encode changes nothing else about an item, so the browse
@@ -397,8 +404,8 @@ func TestCurrentSchemaCreatedAndAccepted(t *testing.T) {
 	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 8 {
-		t.Fatalf("created schema version = %d, want 8", version)
+	if version != 9 {
+		t.Fatalf("created schema version = %d, want 9", version)
 	}
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)
@@ -548,7 +555,7 @@ func TestBackupSnapshotsLiveCatalog(t *testing.T) {
 	if _, err := catalog.UpsertMedia(ctx, MediaFile{
 		ItemID: itemID, Path: "/movies/Arrival (2016)/Arrival (2016).mkv",
 		Size: 100, MTimeNS: 20, DurationMS: 600_000, LastSeenScanID: scanID,
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := catalog.SetProgress(ctx, itemID, 120_000, 600_000); err != nil {
@@ -615,7 +622,7 @@ func TestNextUp(t *testing.T) {
 		if _, err := catalog.UpsertMedia(ctx, MediaFile{
 			ItemID: id, Path: "/tv/" + key + ".mkv", Size: 100, MTimeNS: 20,
 			DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
-		}, nil); err != nil {
+		}, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		return id
@@ -798,7 +805,7 @@ func TestPlayedWritesCascade(t *testing.T) {
 			if _, err := catalog.UpsertMedia(ctx, MediaFile{
 				ItemID: id, Path: fmt.Sprintf("/tv/S%02dE%02d.mkv", season, number), Size: 100,
 				MTimeNS: 20, DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
-			}, nil); err != nil {
+			}, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			episodes = append(episodes, id)
@@ -923,7 +930,7 @@ func TestListItemsCarryProgress(t *testing.T) {
 		if _, err := catalog.UpsertMedia(ctx, MediaFile{
 			ItemID: id, Path: fmt.Sprintf("/tv/S01E%02d.mkv", number), Size: 100,
 			MTimeNS: 20, DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
-		}, nil); err != nil {
+		}, nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		episodes = append(episodes, id)
@@ -1001,7 +1008,7 @@ func TestShowAndSeasonWatchedCounts(t *testing.T) {
 				if _, err := catalog.UpsertMedia(ctx, MediaFile{
 					ItemID: id, Path: "/tv/" + key + ".mkv", Size: 100, MTimeNS: 20,
 					DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
-				}, nil); err != nil {
+				}, nil, nil); err != nil {
 					t.Fatal(err)
 				}
 				episodes = append(episodes, id)

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -299,7 +300,7 @@ func TestSurvivingEpisodeAdoptsRemainingDuplicateFile(t *testing.T) {
 	if _, err := catalog.UpsertMedia(ctx, store.MediaFile{
 		ItemID: legacyID, Path: older, Size: info.Size(), MTimeNS: info.ModTime().UnixNano(),
 		DurationMS: 600_000, LastSeenScanID: scanID,
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -453,6 +454,11 @@ func TestParseProbeOutput(t *testing.T) {
     {"index":2,"codec_name":"subrip","codec_type":"subtitle","tags":{"language":"eng"}},
     {"index":3,"codec_name":"mjpeg","codec_type":"video","width":600,"height":900,"disposition":{"attached_pic":1}}
   ],
+  "chapters": [
+    {"start_time":"0.000000","tags":{"title":"Opening"}},
+    {"start_time":"264.264000","tags":{"title":"Chapter 02"}},
+    {"start_time":"512.500000"}
+  ],
   "format":{"format_name":"matroska,webm","duration":"600.125"}
 }`))
 	if err != nil {
@@ -465,6 +471,35 @@ func TestParseProbeOutput(t *testing.T) {
 		result.Streams[0].DynamicRange != "hdr" || result.Streams[1].ChannelLayout != "7.1" ||
 		result.Streams[2].Codec != "subrip" {
 		t.Fatalf("unexpected streams: %+v", result.Streams)
+	}
+	want := []store.Chapter{
+		{Index: 0, StartMS: 0, Title: "Opening"},
+		{Index: 1, StartMS: 264_264, Title: "Chapter 02"},
+		{Index: 2, StartMS: 512_500},
+	}
+	if !reflect.DeepEqual(result.Chapters, want) {
+		t.Fatalf("chapters = %+v, want %+v", result.Chapters, want)
+	}
+}
+
+func TestParseProbeOutputIgnoresUnnavigableChapters(t *testing.T) {
+	tests := []struct {
+		name, chapters string
+	}{
+		{name: "no chapters", chapters: ""},
+		{name: "single chapter spanning the file", chapters: `"chapters":[{"start_time":"0.000000"}],`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := parseProbeOutput([]byte(`{` + test.chapters +
+				`"format":{"format_name":"matroska","duration":"600.125"}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Chapters != nil {
+				t.Fatalf("chapters = %+v, want none", result.Chapters)
+			}
+		})
 	}
 }
 
