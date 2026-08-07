@@ -208,6 +208,58 @@ func TestProgress(t *testing.T) {
 	}
 }
 
+func TestPlayedWrites(t *testing.T) {
+	catalog, itemID, _, _ := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+
+	playedURL := server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10) + "/played"
+	call := func(method, url string) (int, int64) {
+		t.Helper()
+		request, err := http.NewRequest(method, url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		var body struct {
+			Updated int64 `json:"updated"`
+		}
+		_ = json.NewDecoder(response.Body).Decode(&body)
+		return response.StatusCode, body.Updated
+	}
+
+	if status, updated := call(http.MethodPost, playedURL); status != http.StatusOK || updated != 1 {
+		t.Fatalf("mark played status=%d updated=%d", status, updated)
+	}
+	item, err := catalog.Item(context.Background(), itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Progress == nil || !item.Progress.Played {
+		t.Fatalf("item was not marked played: %+v", item.Progress)
+	}
+
+	if status, updated := call(http.MethodDelete, playedURL); status != http.StatusOK || updated != 1 {
+		t.Fatalf("clear played status=%d updated=%d", status, updated)
+	}
+	if item, err = catalog.Item(context.Background(), itemID); err != nil {
+		t.Fatal(err)
+	} else if item.Progress != nil {
+		t.Fatalf("item kept playback state: %+v", item.Progress)
+	}
+
+	missingURL := server.URL + "/api/v1/items/" + strconv.FormatInt(itemID+10_000, 10) + "/played"
+	if status, _ := call(http.MethodPost, missingURL); status != http.StatusNotFound {
+		t.Fatalf("mark played on an unknown item status = %d", status)
+	}
+}
+
 func TestItemTechnicalMetadata(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()

@@ -985,6 +985,77 @@ func makeProgress(positionMS, durationMS int64, played bool, updatedAt string) *
 	}
 }
 
+// itemTree collects an item together with every available item beneath it, so a
+// caller can address a show or a season and reach the episodes that actually
+// carry playback state. It is recursive only because the hierarchy is; the
+// catalog never nests deeper than show, season, episode.
+const itemTree = `WITH RECURSIVE tree(id) AS (
+    SELECT id FROM items WHERE id = ? AND available = 1
+    UNION ALL
+    SELECT i.id FROM items i JOIN tree ON i.parent_id = tree.id WHERE i.available = 1
+)`
+
+// SetPlayed marks every playable item at or below itemID as watched and reports
+// how many rows it wrote. Watching something on another device leaves no
+// position to report, so the file's own duration stands in as the position;
+// that keeps the row consistent with what SetProgress would have written had
+// playback actually run to the end.
+func (s *Store) SetPlayed(ctx context.Context, itemID int64) (int64, error) {
+	if err := s.requireItem(ctx, itemID); err != nil {
+		return 0, err
+	}
+	// The WHERE clause is what tells SQLite the ON CONFLICT below belongs to the
+	// upsert rather than to the join above it.
+	result, err := s.db.ExecContext(ctx, itemTree+`
+INSERT INTO playback_state(item_id, position_ms, duration_ms, played, updated_at)
+SELECT m.item_id, m.duration_ms, m.duration_ms, 1, ?
+FROM media_files m JOIN tree ON tree.id = m.item_id
+WHERE true
+ON CONFLICT(item_id) DO UPDATE SET position_ms = excluded.position_ms,
+    duration_ms = excluded.duration_ms, played = 1, updated_at = excluded.updated_at`,
+		itemID, now())
+	if err != nil {
+		return 0, fmt.Errorf("mark played: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read played count: %w", err)
+	}
+	return count, nil
+}
+
+// ClearPlayback forgets playback state at or below itemID and reports how many
+// rows it removed. Dropping the row rather than only clearing the played flag is
+// what lets one call both retire an abandoned movie from Continue Watching and
+// return a show to a clean first watch.
+func (s *Store) ClearPlayback(ctx context.Context, itemID int64) (int64, error) {
+	if err := s.requireItem(ctx, itemID); err != nil {
+		return 0, err
+	}
+	result, err := s.db.ExecContext(ctx, itemTree+`
+DELETE FROM playback_state WHERE item_id IN (SELECT id FROM tree)`, itemID)
+	if err != nil {
+		return 0, fmt.Errorf("clear playback state: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read cleared count: %w", err)
+	}
+	return count, nil
+}
+
+func (s *Store) requireItem(ctx context.Context, itemID int64) error {
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM items WHERE id = ? AND available = 1`, itemID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("find item: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) progress(ctx context.Context, itemID int64) (*Progress, error) {
 	var position, duration int64
 	var played bool

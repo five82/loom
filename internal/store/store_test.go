@@ -752,6 +752,138 @@ func TestNextUp(t *testing.T) {
 	}
 }
 
+// Watching happens away from Loom too, and an abandoned title otherwise sits in
+// Continue Watching forever, so played state has to be writable without playing
+// anything.
+func TestPlayedWritesCascade(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Show", Kind: "show", Title: "Show", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seasons []int64
+	var episodes []int64
+	for season := 1; season <= 2; season++ {
+		seasonID, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, ParentID: &showID,
+			SourceKey: fmt.Sprintf("Show/season-%d", season), Kind: "season",
+			Title: fmt.Sprintf("Season %d", season), SeasonNumber: season, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seasons = append(seasons, seasonID)
+		for number := 1; number <= 2; number++ {
+			id, err := catalog.UpsertItem(ctx, ItemInput{
+				LibraryID: libraryID, ParentID: &seasonID,
+				SourceKey: fmt.Sprintf("Show/S%02dE%02d", season, number), Kind: "episode",
+				Title: fmt.Sprintf("S%02dE%02d", season, number), SeasonNumber: season,
+				EpisodeNumber: number, ScanID: scanID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := catalog.UpsertMedia(ctx, MediaFile{
+				ItemID: id, Path: fmt.Sprintf("/tv/S%02dE%02d.mkv", season, number), Size: 100,
+				MTimeNS: 20, DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
+			}, nil); err != nil {
+				t.Fatal(err)
+			}
+			episodes = append(episodes, id)
+		}
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 4, 4, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// One season watched elsewhere: the other season must be left alone.
+	updated, err := catalog.SetPlayed(ctx, seasons[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 2 {
+		t.Fatalf("marking a season played updated %d rows, want 2", updated)
+	}
+	listed, err := catalog.ListItems(ctx, ListOptions{ParentID: &seasons[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed {
+		if item.Progress == nil || !item.Progress.Played || item.Progress.ResumePositionMS != 0 {
+			t.Fatalf("episode was not marked played: %+v", item.Progress)
+		}
+	}
+	if listed, err = catalog.ListItems(ctx, ListOptions{ParentID: &seasons[1]}); err != nil {
+		t.Fatal(err)
+	} else if listed[0].Progress != nil {
+		t.Fatalf("marking one season played reached another: %+v", listed[0].Progress)
+	}
+
+	// A half-watched episode that is then marked played must leave Continue
+	// Watching rather than keep offering a resume point.
+	if _, err := catalog.SetProgress(ctx, episodes[2], 900_000, 1_800_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetPlayed(ctx, episodes[2]); err != nil {
+		t.Fatal(err)
+	}
+	continuing, err := catalog.ContinueWatching(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(continuing) != 0 {
+		t.Fatalf("continue watching kept a played episode: %+v", continuing)
+	}
+
+	// Clearing the show returns the whole series to a first watch.
+	cleared, err := catalog.ClearPlayback(ctx, showID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared != 3 {
+		t.Fatalf("clearing a show removed %d rows, want 3", cleared)
+	}
+	nextUp, err := catalog.NextUp(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nextUp) != 0 {
+		t.Fatalf("next up still had history for a cleared show: %+v", nextUp)
+	}
+	for _, id := range episodes {
+		item, err := catalog.Item(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if item.Progress != nil {
+			t.Fatalf("episode %d kept playback state: %+v", id, item.Progress)
+		}
+	}
+
+	// Clearing again is harmless, and an unknown item is still an error.
+	if cleared, err = catalog.ClearPlayback(ctx, showID); err != nil || cleared != 0 {
+		t.Fatalf("second clear updated=%d err=%v", cleared, err)
+	}
+	if _, err := catalog.SetPlayed(ctx, showID+10_000); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("marking an unknown item played returned %v", err)
+	}
+	if _, err := catalog.ClearPlayback(ctx, showID+10_000); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("clearing an unknown item returned %v", err)
+	}
+}
+
 func TestListItemsCarryProgress(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))

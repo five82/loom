@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +40,8 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	api.public.HandleFunc("GET /api/v1/items/{id}/children", api.children)
 	api.public.HandleFunc("GET /api/v1/items/{id}/playback", api.playback)
 	api.public.HandleFunc("PUT /api/v1/items/{id}/progress", api.saveProgress)
+	api.public.HandleFunc("POST /api/v1/items/{id}/played", api.markPlayed)
+	api.public.HandleFunc("DELETE /api/v1/items/{id}/played", api.clearPlayed)
 	api.public.HandleFunc("GET /api/v1/items/{id}/images/{kind}/options", api.imageOptions)
 	api.public.HandleFunc("PUT /api/v1/items/{id}/images/{kind}", api.selectImage)
 	api.public.HandleFunc("POST /api/v1/items/{id}/images/{kind}/reset", api.resetImage)
@@ -254,6 +257,35 @@ func (a *API) saveProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, progress)
+}
+
+// markPlayed and clearPlayed accept a movie, episode, season, or show, so a
+// viewer can retire a whole series in one call. Both report how many playback
+// rows changed; addressing something with no playable media below it is not an
+// error, it simply changes nothing.
+func (a *API) markPlayed(w http.ResponseWriter, r *http.Request) {
+	a.writePlayed(w, r, a.store.SetPlayed)
+}
+
+func (a *API) clearPlayed(w http.ResponseWriter, r *http.Request) {
+	a.writePlayed(w, r, a.store.ClearPlayback)
+}
+
+func (a *API) writePlayed(w http.ResponseWriter, r *http.Request, apply func(context.Context, int64) (int64, error)) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	updated, err := apply(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "item not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"updated": updated})
 }
 
 func (a *API) media(w http.ResponseWriter, r *http.Request) {

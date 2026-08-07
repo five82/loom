@@ -230,6 +230,8 @@ POST /api/v1/items/{id}/images/{poster|backdrop|logo|thumb}/reset
 GET  /api/v1/media/{media-id}
 GET  /api/v1/images/{image-id}?tag={image-tag}&width={pixels}
 PUT  /api/v1/items/{id}/progress
+POST /api/v1/items/{id}/played
+DELETE /api/v1/items/{id}/played
 GET  /api/v1/continue-watching
 GET  /api/v1/next-up
 GET  /api/v1/recently-added
@@ -264,6 +266,14 @@ Next Up. An episode sampled below the resume floor reaches neither row on its
 own, so Next Up keeps offering it rather than skipping ahead. Specials are
 excluded from Next Up so season zero cannot stand in front of a pilot. Both
 return items in the same shape.
+
+Playback progress is not only reported by a player. `POST` to an item's `played`
+endpoint records it as watched without playing it, for a title finished on
+another device, and `DELETE` forgets its playback state entirely, which both
+retires an abandoned title from Continue Watching and returns a series to a
+first watch. Both accept a movie, episode, season, or show and cascade to every
+playable item beneath it, and both answer with the number of playback records
+they changed.
 
 Browse listings carry `progress` for any item that has been played, so a client
 showing a season can mark watched episodes without a request per episode. Items
