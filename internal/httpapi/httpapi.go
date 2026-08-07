@@ -509,8 +509,14 @@ func (a *API) status(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	lastScans, err := a.store.LastScans(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"running": true, "pid": os.Getpid(), "scan": a.scans.Status(), "catalog": stats,
+		"running": true, "pid": os.Getpid(), "scan": a.scans.Status(),
+		"catalog": stats, "last_scans": lastScans,
 	})
 }
 

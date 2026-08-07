@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -459,5 +460,54 @@ func TestFailedScanDoesNotMakeItemsUnavailable(t *testing.T) {
 	}
 	if len(items) != 1 {
 		t.Fatalf("available items = %d, want 1", len(items))
+	}
+}
+
+func TestLastScansReportsNewestFinishedScanPerLibrary(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	movieID, movieScanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, movieID, movieScanID, 12, 3, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A later failed scan must replace the successful one in the report, even
+	// though libraries.last_scan_id still points at the success.
+	_, failedScanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, movieID, failedScanID, 4, 0, 0, errors.New("mount gone")); err != nil {
+		t.Fatal(err)
+	}
+	// A scan still running has no result to report yet.
+	if _, _, err := catalog.StartScan(ctx, "tv", "/tv"); err != nil {
+		t.Fatal(err)
+	}
+
+	scans, err := catalog.LastScans(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []LibraryScan{{
+		Library: "movies", Status: "failed", Discovered: 4, Error: "mount gone",
+	}}
+	if len(scans) != len(want) {
+		t.Fatalf("last scans = %+v, want one movies entry", scans)
+	}
+	got := scans[0]
+	if got.FinishedAt == "" {
+		t.Fatalf("last scan has no finished_at: %+v", got)
+	}
+	got.FinishedAt = ""
+	if got != want[0] {
+		t.Fatalf("last scan = %+v, want %+v", got, want[0])
 	}
 }

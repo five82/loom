@@ -287,6 +287,45 @@ UPDATE scan_runs SET finished_at = ?, status = ?, discovered_files = ?, changed_
 	return nil
 }
 
+// LibraryScan reports how one library's most recent finished scan went.
+type LibraryScan struct {
+	Library     string `json:"library"`
+	FinishedAt  string `json:"finished_at"`
+	Status      string `json:"status"`
+	Discovered  int    `json:"discovered_files"`
+	Changed     int    `json:"changed_files"`
+	ProbeErrors int    `json:"probe_errors"`
+	Error       string `json:"error,omitempty"`
+}
+
+// LastScans returns the newest finished scan per library. It deliberately does
+// not follow libraries.last_scan_id, which only advances on success and would
+// hide a failed scan behind the last good one. Libraries that have never
+// finished a scan are omitted.
+func (s *Store) LastScans(ctx context.Context) ([]LibraryScan, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT l.kind, s.finished_at, s.status, s.discovered_files, s.changed_files, s.probe_errors, s.error
+FROM libraries l
+JOIN scan_runs s ON s.id = (
+    SELECT id FROM scan_runs WHERE library_id = l.id AND finished_at IS NOT NULL
+    ORDER BY id DESC LIMIT 1)
+ORDER BY l.kind`)
+	if err != nil {
+		return nil, fmt.Errorf("last scans: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var result []LibraryScan
+	for rows.Next() {
+		var scan LibraryScan
+		if err := rows.Scan(&scan.Library, &scan.FinishedAt, &scan.Status, &scan.Discovered,
+			&scan.Changed, &scan.ProbeErrors, &scan.Error); err != nil {
+			return nil, fmt.Errorf("scan last scan: %w", err)
+		}
+		result = append(result, scan)
+	}
+	return result, rows.Err()
+}
+
 // ItemInput is the scanner-owned representation of a catalog item.
 type ItemInput struct {
 	LibraryID        int64

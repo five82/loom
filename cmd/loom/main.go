@@ -158,6 +158,17 @@ type daemonStatus struct {
 		Unmatched int `json:"unmatched"`
 		Media     int `json:"media_files"`
 	} `json:"catalog"`
+	LastScans []store.LibraryScan `json:"last_scans"`
+}
+
+// localTime renders a stored UTC timestamp for a human reading the terminal,
+// leaving anything unparseable alone rather than hiding it.
+func localTime(value string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return value
+	}
+	return parsed.Local().Format("2006-01-02 15:04")
 }
 
 func newStatusCommand() *cobra.Command {
@@ -196,6 +207,13 @@ func newStatusCommand() *cobra.Command {
 			fmt.Printf("Catalog: %d movies, %d shorts, %d shows, %d episodes, %d unmatched, %d media files\n",
 				status.Catalog.Movies, status.Catalog.Shorts, status.Catalog.Shows,
 				status.Catalog.Episodes, status.Catalog.Unmatched, status.Catalog.Media)
+			for _, scan := range status.LastScans {
+				fmt.Printf("Last %s scan: %s, %d discovered, %d changed, %d probe errors\n",
+					scan.Library, localTime(scan.FinishedAt), scan.Discovered, scan.Changed, scan.ProbeErrors)
+				if scan.Status != "completed" {
+					fmt.Printf("  failed: %s\n", scan.Error)
+				}
+			}
 			return nil
 		},
 	}
