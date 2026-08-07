@@ -195,7 +195,10 @@ GET  /api/v1/recently-added
 
 Media responses support `HEAD` and HTTP byte ranges. Playback responses include
 the original filename, exact file size in bytes, and a media version tag. The
-returned stream URL includes that tag; tagged responses have an `ETag` and are
+size and tag describe the file as it is on disk when the request is served
+rather than as the last scan recorded it, so a playback response always returns
+a stream URL the media endpoint accepts.
+That stream URL includes the tag; tagged responses have an `ETag` and are
 immutable, while stale tags return `404 Not Found`. This lets clients resume and
 validate offline downloads without combining bytes from different file
 versions. An offline download is always a full-size copy of the original source

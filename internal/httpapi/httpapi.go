@@ -205,6 +205,18 @@ func (a *API) playback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "item is not directly playable")
 		return
 	}
+	// Report the size and tag observed on disk rather than the scanner's recorded
+	// values. The two disagree whenever a file changes before the next scan, and a
+	// stale tag would make the media handler reject the very stream URL returned
+	// here. Recomputing keeps a tag mismatch meaning only what it should: the file
+	// changed after a client started downloading it.
+	info, err := os.Stat(item.Media.Path)
+	if err != nil || !info.Mode().IsRegular() {
+		writeError(w, http.StatusNotFound, "media file is unavailable")
+		return
+	}
+	item.Media.Size = info.Size()
+	item.Media.Tag = store.MediaTag(item.Media.ID, info.Size(), info.ModTime().UnixNano())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"item_id": item.ID, "media": item.Media,
 		"stream_url": fmt.Sprintf("/api/v1/media/%d?tag=%s", item.Media.ID, item.Media.Tag),

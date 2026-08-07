@@ -118,6 +118,70 @@ func TestMediaDownloadMetadataAndVersionedResponses(t *testing.T) {
 	}
 }
 
+// A file can change between scans. Playback must report the version currently on
+// disk, otherwise it hands out a stream URL that the media handler itself rejects.
+func TestPlaybackReportsLiveFileVersion(t *testing.T) {
+	catalog, itemID, mediaID, contents := testCatalog(t)
+	defer func() { _ = catalog.Close() }()
+	manager := library.NewManager(nil, 0, slog.Default())
+	api := New(catalog, manager, nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+
+	playbackURL := server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10) + "/playback"
+	readPlayback := func() (store.MediaFile, string) {
+		t.Helper()
+		response, err := http.Get(playbackURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		var playback struct {
+			Media     store.MediaFile `json:"media"`
+			StreamURL string          `json:"stream_url"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&playback); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("playback status = %d", response.StatusCode)
+		}
+		return playback.Media, playback.StreamURL
+	}
+
+	before, _ := readPlayback()
+
+	media, err := catalog.Media(context.Background(), mediaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := append(append([]byte{}, contents...), 'x')
+	if err := os.WriteFile(media.Path, replaced, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	after, streamURL := readPlayback()
+	if after.Tag == before.Tag {
+		t.Fatalf("tag unchanged after the file was replaced: %q", after.Tag)
+	}
+	if after.Size != int64(len(replaced)) {
+		t.Fatalf("size = %d, want %d", after.Size, len(replaced))
+	}
+
+	response, err := http.Get(server.URL + streamURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Equal(body, replaced) {
+		t.Fatalf("stream after replacement status=%d body=%q", response.StatusCode, body)
+	}
+}
+
 func TestProgress(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
