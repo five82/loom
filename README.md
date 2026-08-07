@@ -83,6 +83,19 @@ loom stop
 to become ready. `loom stop` requests a graceful shutdown over that socket. A
 PID file is not used.
 
+To ship the working tree to the running server:
+
+```bash
+./deploy.sh
+```
+
+This snapshots the catalog, builds a static binary, stops the daemon, installs
+over the `loom` on `PATH` while keeping the previous binary beside it, and
+starts again. The daemon has to be down before the new binary lands because a
+schema change migrates on startup. The script does not test what it ships, so
+run `./check-ci.sh` first, and after a schema change verify the migration by
+hand before trusting the result.
+
 To snapshot the catalog before a risky change:
 
 ```bash

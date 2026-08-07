@@ -6,6 +6,7 @@ This file provides guidance when working with code in this repository.
 
 - Do not create git branches unless explicitly instructed.
 - Run `./check-ci.sh` before handing work back.
+- Deploy with `./deploy.sh`; do not stop, build, and install by hand.
 
 ## Project
 
@@ -25,18 +26,39 @@ Loom and Takeup are developed and deployed together for one user. Do not preserv
 - When troubleshooting, gather evidence and test rather than guessing.
 - Add focused tests for new behavior and regressions.
 
+## Deployment
+
+Loom runs on the development machine itself, so a deploy is local. `./deploy.sh`
+snapshots the catalog, builds a static binary, stops the daemon, installs over
+the `loom` on `PATH` while keeping the previous binary beside it, and starts
+again. It does not run tests; run `./check-ci.sh` first.
+
+- The daemon runs from the `loom` on `PATH`, normally `~/go/bin/loom`.
+- Durable state lives in `~/.local/state/loom`: `loom.db`, `daemon.log`, and
+  `images/`. Configuration is `~/.config/loom/config.toml`, whose `api.bind` is
+  a LAN address rather than the documented default, so check it before probing
+  the API over HTTP.
+- Nothing starts Loom at boot. After a reboot it stays down until `loom start`.
+
 ## Database Schema Changes
 
 The catalog contains durable playback state and manual artwork selections.
 `loom developer reset` is destructive and is not a normal schema upgrade path.
 
 - Add a focused one-shot migration from the currently deployed schema.
-- Run `loom backup` before deploying, then stop Loom and let the new binary
-  perform the migration on startup. `loom backup` snapshots the running catalog
-  with `VACUUM INTO` and prints the path; do not copy `loom.db` by hand, because
-  WAL mode leaves recent commits in `loom.db-wal`.
+- Deploy with `./deploy.sh`, which snapshots the catalog and stops the daemon
+  before the new binary lands, so the migration runs on startup. The snapshot
+  uses `VACUUM INTO`; do not copy `loom.db` by hand, because WAL mode leaves
+  recent commits in `loom.db-wal`.
 - Verify the schema version, foreign-key integrity, playback state, and manual
-  artwork selections before considering the migration complete.
+  artwork selections before considering the migration complete. Record the
+  counts before deploying, because the check that matters is that they are
+  unchanged afterwards. `deploy.sh` does none of this.
+- A migration that only adds a table leaves existing rows untouched, and the
+  scanner skips any media file whose size and mtime still match the catalog. If
+  new columns or tables are meant to be filled from the files themselves, the
+  migration has to invalidate the recorded mtime so the next scan re-probes
+  them, and the deploy is not complete until that scan has run.
 - Report the snapshot path and leave it for normal system cleanup after
   successful validation. If migration or validation fails, retain the snapshot
   and report it as the restoration source. Never treat `/tmp` as durable backup
@@ -56,4 +78,5 @@ go test -race ./...                    # Race detector
 golangci-lint run                      # Lint
 ./check-ci.sh                          # Full CI (recommended before handoff)
 ./check-deps.sh                        # Dependency health check
+./deploy.sh                            # Build and deploy to the local server
 ```
