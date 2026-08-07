@@ -121,13 +121,16 @@ type GenreSummary struct {
 	ItemCount int    `json:"item_count"`
 }
 
+// Genres summarizes movie genres only. Short films are their own top-level
+// library and are excluded so counts match what `library=movies` returns.
 func (s *Store) Genres(ctx context.Context) ([]GenreSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT g.id, g.name, COUNT(*)
 FROM genres g
 JOIN item_genres ig ON ig.genre_id = g.id
 JOIN items i ON i.id = ig.item_id
-WHERE i.available = 1 AND i.kind = 'movie'
+JOIN libraries l ON l.id = i.library_id
+WHERE i.available = 1 AND i.kind = 'movie' AND l.kind = 'movies'
 GROUP BY g.id, g.name
 ORDER BY g.name COLLATE NOCASE, g.id`)
 	if err != nil {

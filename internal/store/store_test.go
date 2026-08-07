@@ -104,9 +104,20 @@ func TestMovieGenres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	shortsID, shortsScanID, err := catalog.StartScan(ctx, "shorts", "/shorts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prestoID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: shortsID, SourceKey: "Presto", Kind: "movie", Title: "Presto", ScanID: shortsScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for id, genres := range map[int64][]Genre{
 		arrivalID: {{ID: 18, Name: "Drama"}, {ID: 878, Name: "Science Fiction"}},
 		alienID:   {{ID: 878, Name: "Science Fiction"}},
+		prestoID:  {{ID: 878, Name: "Science Fiction"}, {ID: 16, Name: "Animation"}},
 	} {
 		if err := catalog.UpdateMetadata(ctx, id, MetadataUpdate{
 			TMDBID: id, Genres: genres, GenresLoaded: true,
@@ -117,7 +128,12 @@ func TestMovieGenres(t *testing.T) {
 	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 2, 0, nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := catalog.FinishScan(ctx, shortsID, shortsScanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
 
+	// Short films are browsed as their own library, so they contribute no genres
+	// and no counts here.
 	genres, err := catalog.Genres(ctx)
 	if err != nil {
 		t.Fatal(err)

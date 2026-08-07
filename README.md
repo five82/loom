@@ -211,9 +211,10 @@ Select one of the provider paths returned by the image-options endpoint:
 }
 ```
 
-The genres endpoint lists movie and short film genres represented in the
-available catalog, including an item count. Movie items include their genres and
-can be filtered by TMDB genre ID.
+The genres endpoint lists the genres represented in the available movie library,
+including an item count. Short films are browsed as their own top-level library
+rather than by genre, so they are excluded from these counts. Items include
+their genres and can be filtered by TMDB genre ID.
 
 Search matches available movie, show, and episode titles case-insensitively.
 Exact and prefix matches are returned before other substring matches. Results
