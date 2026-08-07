@@ -231,6 +231,7 @@ GET  /api/v1/media/{media-id}
 GET  /api/v1/images/{image-id}?tag={image-tag}&width={pixels}
 PUT  /api/v1/items/{id}/progress
 GET  /api/v1/continue-watching
+GET  /api/v1/next-up
 GET  /api/v1/recently-added
 POST /api/v1/scan
 GET  /api/v1/scan
@@ -253,6 +254,20 @@ replacement encode changes nothing else about an item, so without it a client
 holding an offline copy cannot tell that the file behind a title changed short of
 requesting playback details for every item. The playback endpoint reads the file
 as it is on disk and stays authoritative; `media_tag` lags until the next scan.
+
+Continue Watching and Next Up together keep a show on the home screen for a
+whole binge. Continue Watching returns only partially watched items, so an
+episode leaves it once playback passes the played threshold; Next Up then offers
+the earliest unfinished episode of every show with viewing history. The two rows
+never list the same show, because a show with a resumable episode stays out of
+Next Up. An episode sampled below the resume floor reaches neither row on its
+own, so Next Up keeps offering it rather than skipping ahead. Specials are
+excluded from Next Up so season zero cannot stand in front of a pilot. Both
+return items in the same shape.
+
+Browse listings carry `progress` for any item that has been played, so a client
+showing a season can mark watched episodes without a request per episode. Items
+with no playback history omit the field.
 
 Select one of the provider paths returned by the image-options endpoint:
 

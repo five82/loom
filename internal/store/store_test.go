@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -585,5 +586,242 @@ func TestBackupSnapshotsLiveCatalog(t *testing.T) {
 	}
 	if err := Backup(ctx, filepath.Join(dir, "missing.db"), filepath.Join(dir, "other.db")); err == nil {
 		t.Fatal("Backup of a missing catalog succeeded")
+	}
+}
+
+func TestNextUp(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// episode records one episode and its file, and returns the item id.
+	episode := func(show string, seasonID int64, season, number int) int64 {
+		t.Helper()
+		key := fmt.Sprintf("%s/S%02dE%02d", show, season, number)
+		id, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, ParentID: &seasonID, SourceKey: key, Kind: "episode",
+			Title: key, SeasonNumber: season, EpisodeNumber: number, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := catalog.UpsertMedia(ctx, MediaFile{
+			ItemID: id, Path: "/tv/" + key + ".mkv", Size: 100, MTimeNS: 20,
+			DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	season := func(show string, showID int64, number int) int64 {
+		t.Helper()
+		id, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, ParentID: &showID,
+			SourceKey: fmt.Sprintf("%s/season-%d", show, number), Kind: "season",
+			Title: fmt.Sprintf("Season %d", number), SeasonNumber: number, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	show := func(title string) int64 {
+		t.Helper()
+		id, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, SourceKey: title, Kind: "show", Title: title, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	watch := func(itemID int64, positionMS int64) {
+		t.Helper()
+		if _, err := catalog.SetProgress(ctx, itemID, positionMS, 1_800_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Office: first episode finished, so the second is next.
+	officeID := show("Office")
+	officeS1 := season("Office", officeID, 1)
+	officeSpecials := season("Office", officeID, 0)
+	special := episode("Office", officeSpecials, 0, 1)
+	officeE1 := episode("Office", officeS1, 1, 1)
+	officeE2 := episode("Office", officeS1, 1, 2)
+
+	// Gap: episode 2 is missing from disk, so episode 3 follows episode 1.
+	gapID := show("Gap")
+	gapS1 := season("Gap", gapID, 1)
+	gapE1 := episode("Gap", gapS1, 1, 1)
+	gapE3 := episode("Gap", gapS1, 1, 3)
+
+	// Partial: an episode is mid-watch, so Continue Watching owns this show.
+	partialID := show("Partial")
+	partialS1 := season("Partial", partialID, 1)
+	partialE1 := episode("Partial", partialS1, 1, 1)
+	episode("Partial", partialS1, 1, 2)
+
+	// Glance: sampled below the resume floor, so Continue Watching does not
+	// carry it and Next Up still has to offer the episode itself.
+	glanceID := show("Glance")
+	glanceS1 := season("Glance", glanceID, 1)
+	glanceE1 := episode("Glance", glanceS1, 1, 1)
+	episode("Glance", glanceS1, 1, 2)
+
+	// Done: every episode watched. Fresh: never started.
+	doneID := show("Done")
+	doneE1 := episode("Done", season("Done", doneID, 1), 1, 1)
+	freshID := show("Fresh")
+	episode("Fresh", season("Fresh", freshID, 1), 1, 1)
+
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 8, 8, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if items, err := catalog.NextUp(ctx, 20); err != nil {
+		t.Fatal(err)
+	} else if len(items) != 0 {
+		t.Fatalf("next up listed unstarted shows: %+v", items)
+	}
+
+	watch(doneE1, 1_750_000)
+	watch(glanceE1, 30_000)
+	watch(gapE1, 1_750_000)
+	watch(partialE1, 900_000)
+	watch(officeE1, 1_750_000)
+
+	// A glance is below the resume floor, so it reaches neither home-screen row
+	// unless Next Up still counts the episode as unfinished.
+	continuing, err := catalog.ContinueWatching(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range continuing {
+		if item.ID == glanceE1 {
+			t.Fatalf("continue watching carried a glance: %+v", continuing)
+		}
+	}
+
+	items, err := catalog.NextUp(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Office was watched last, so it leads. Done and Fresh have nothing to
+	// offer, and Partial is already in Continue Watching.
+	want := []int64{officeE2, gapE3, glanceE1}
+	if len(items) != len(want) {
+		t.Fatalf("next up = %+v, want episodes %v", items, want)
+	}
+	for index, id := range want {
+		if items[index].ID != id {
+			t.Fatalf("next up[%d] = %d (%s), want %d", index, items[index].ID, items[index].Title, id)
+		}
+	}
+
+	// Finishing the mid-watch episode releases the show from Continue Watching,
+	// so Next Up has to take over rather than let it fall off the home screen.
+	watch(partialE1, 1_750_000)
+	items, err = catalog.NextUp(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 4 || items[0].EpisodeNumber != 2 || items[0].Title != "Partial/S01E02" {
+		t.Fatalf("next up after finishing an episode = %+v", items)
+	}
+
+	// A watched special must not become the next episode of its show.
+	if _, err := catalog.SetProgress(ctx, special, 1_750_000, 1_800_000); err != nil {
+		t.Fatal(err)
+	}
+	items, err = catalog.NextUp(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.ID == special {
+			t.Fatalf("next up offered a special: %+v", items)
+		}
+	}
+}
+
+func TestListItemsCarryProgress(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Show", Kind: "show", Title: "Show", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seasonID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, ParentID: &showID, SourceKey: "Show/season-1",
+		Kind: "season", Title: "Season 1", SeasonNumber: 1, ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var episodes []int64
+	for number := 1; number <= 3; number++ {
+		id, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, ParentID: &seasonID,
+			SourceKey: fmt.Sprintf("Show/S01E%02d", number), Kind: "episode",
+			Title: fmt.Sprintf("Episode %d", number), SeasonNumber: 1,
+			EpisodeNumber: number, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := catalog.UpsertMedia(ctx, MediaFile{
+			ItemID: id, Path: fmt.Sprintf("/tv/S01E%02d.mkv", number), Size: 100,
+			MTimeNS: 20, DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: scanID,
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+		episodes = append(episodes, id)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 3, 3, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetProgress(ctx, episodes[0], 1_750_000, 1_800_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetProgress(ctx, episodes[1], 600_000, 1_800_000); err != nil {
+		t.Fatal(err)
+	}
+
+	// Browsing a season has to say what has already been watched, otherwise a
+	// client can only find out one request per episode.
+	listed, err := catalog.ListItems(ctx, ListOptions{ParentID: &seasonID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("season children = %+v", listed)
+	}
+	if listed[0].Progress == nil || !listed[0].Progress.Played {
+		t.Fatalf("watched episode lost its played flag: %+v", listed[0].Progress)
+	}
+	if listed[1].Progress == nil || listed[1].Progress.ResumePositionMS != 600_000 {
+		t.Fatalf("partly watched episode lost its resume point: %+v", listed[1].Progress)
+	}
+	if listed[2].Progress != nil {
+		t.Fatalf("untouched episode reported progress: %+v", listed[2].Progress)
 	}
 }

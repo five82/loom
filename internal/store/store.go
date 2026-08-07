@@ -725,8 +725,15 @@ func (s *Store) ListItems(ctx context.Context, opts ListOptions) ([]Item, error)
 		args = append(args, opts.GenreID)
 	}
 	args = append(args, opts.Limit, opts.Offset)
-	query := `SELECT ` + itemColumns + `
+	// Listings carry playback state so a client browsing a season can mark what
+	// it has already watched. Without it the only way to draw those markers is
+	// one item request per episode. Items with no playback row keep an absent
+	// progress field rather than a zeroed one.
+	query := `SELECT ` + itemColumns + `,
+    COALESCE(p.position_ms, 0), COALESCE(p.duration_ms, 0), COALESCE(p.played, 0),
+    COALESCE(p.updated_at, '')
 FROM items i JOIN libraries l ON l.id = i.library_id
+LEFT JOIN playback_state p ON p.item_id = i.id
 WHERE ` + strings.Join(clauses, " AND ") + `
 ORDER BY CASE i.kind WHEN 'season' THEN i.season_number WHEN 'episode' THEN i.episode_number ELSE 0 END,
     i.title COLLATE NOCASE, i.id
@@ -738,9 +745,15 @@ LIMIT ? OFFSET ?`
 	defer func() { _ = rows.Close() }()
 	var result []Item
 	for rows.Next() {
-		item, err := scanItem(rows)
+		var position, duration int64
+		var played bool
+		var updated string
+		item, err := scanItemFields(rows, &position, &duration, &played, &updated)
 		if err != nil {
 			return nil, err
+		}
+		if updated != "" {
+			item.Progress = makeProgress(position, duration, played, updated)
 		}
 		result = append(result, item)
 	}
@@ -988,6 +1001,14 @@ SELECT position_ms, duration_ms, played, updated_at FROM playback_state WHERE it
 	return makeProgress(position, duration, played, updated), nil
 }
 
+// resumablePlayback describes a playback row a viewer can pick up mid-stream.
+// NextUp reuses it to keep a show out of Next Up while Continue Watching is
+// already offering an episode of it, so the two home-screen rows never list the
+// same show twice.
+const resumablePlayback = `p.played = 0 AND p.duration_ms >= 300000
+    AND CAST(p.position_ms AS REAL) / p.duration_ms >= 0.05
+    AND CAST(p.position_ms AS REAL) / p.duration_ms < 0.90`
+
 func (s *Store) ContinueWatching(ctx context.Context, limit int) ([]Item, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -995,9 +1016,7 @@ func (s *Store) ContinueWatching(ctx context.Context, limit int) ([]Item, error)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`,
     p.position_ms, p.duration_ms, p.played, p.updated_at
 FROM playback_state p JOIN items i ON i.id = p.item_id
-WHERE i.available = 1 AND p.played = 0 AND p.duration_ms >= 300000
-    AND CAST(p.position_ms AS REAL) / p.duration_ms >= 0.05
-    AND CAST(p.position_ms AS REAL) / p.duration_ms < 0.90
+WHERE i.available = 1 AND `+resumablePlayback+`
 ORDER BY p.updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list continue watching: %w", err)
@@ -1013,6 +1032,72 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 			return nil, fmt.Errorf("scan continue-watching item: %w", err)
 		}
 		item.Progress = makeProgress(position, duration, played, updated)
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.populateGenres(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// NextUp returns the earliest unfinished episode of every show with viewing
+// history. Continue Watching holds only partially watched items, so a show
+// leaves the home screen the moment an episode crosses the played threshold and
+// nothing points at the following episode. Specials are excluded because season
+// zero sorts ahead of the pilot and would otherwise block a first watch.
+//
+// Candidates turn on played rather than on having any playback row at all. An
+// episode abandoned below the resume floor is too short a watch to reach
+// Continue Watching, and treating it as history would skip it here as well.
+func (s *Store) NextUp(ctx context.Context, limit int) ([]Item, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+WITH started AS (
+    SELECT season.parent_id AS show_id, MAX(p.updated_at) AS last_watched
+    FROM playback_state p
+    JOIN items episode ON episode.id = p.item_id AND episode.kind = 'episode'
+    JOIN items season ON season.id = episode.parent_id
+    GROUP BY season.parent_id
+    HAVING NOT EXISTS (
+        SELECT 1 FROM playback_state p
+        JOIN items e ON e.id = p.item_id AND e.kind = 'episode' AND e.available = 1
+        JOIN items s ON s.id = e.parent_id
+        WHERE s.parent_id = show_id AND `+resumablePlayback+`
+    )
+),
+candidates AS (
+    SELECT episode.id AS episode_id, started.last_watched,
+        ROW_NUMBER() OVER (PARTITION BY started.show_id
+            ORDER BY episode.season_number, episode.episode_number, episode.id) AS position
+    FROM items episode
+    JOIN items season ON season.id = episode.parent_id
+    JOIN started ON started.show_id = season.parent_id
+    WHERE episode.kind = 'episode' AND episode.available = 1 AND episode.season_number > 0
+        AND NOT EXISTS (
+            SELECT 1 FROM playback_state p WHERE p.item_id = episode.id AND p.played = 1)
+)
+SELECT `+itemColumns+`
+FROM candidates c JOIN items i ON i.id = c.episode_id
+WHERE c.position = 1
+ORDER BY c.last_watched DESC, i.id LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list next up: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var result []Item
+	for rows.Next() {
+		item, err := scanItem(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan next-up item: %w", err)
+		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {

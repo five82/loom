@@ -45,6 +45,7 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	api.public.HandleFunc("GET /api/v1/media/{id}", api.media)
 	api.public.HandleFunc("GET /api/v1/images/{id}", api.image)
 	api.public.HandleFunc("GET /api/v1/continue-watching", api.continueWatching)
+	api.public.HandleFunc("GET /api/v1/next-up", api.nextUp)
 	api.public.HandleFunc("GET /api/v1/recently-added", api.recentlyAdded)
 	// Scanning is public so a client or an off-host ingest workflow can pick up new
 	// files without waiting for the scheduled scan. A scan is incremental and the
@@ -482,6 +483,20 @@ func (a *API) continueWatching(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := a.store.ContinueWatching(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *API) nextUp(w http.ResponseWriter, r *http.Request) {
+	limit, _, err := pagination(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	items, err := a.store.NextUp(r.Context(), limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
