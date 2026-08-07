@@ -302,7 +302,12 @@ func (s *Scanner) scanMedia(ctx context.Context, itemID, scanID int64, path stri
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	if err == nil && existing.Size == info.Size() && existing.MTimeNS == info.ModTime().UnixNano() && existing.ProbeError == "" {
+	// The lookup is by path but the catalog stores media by item, so an unchanged
+	// file still has to be re-recorded when it now belongs to a different item.
+	// That happens when duplicate files for one episode are resolved and the
+	// surviving item inherits the remaining file.
+	if err == nil && existing.ItemID == itemID && existing.Size == info.Size() &&
+		existing.MTimeNS == info.ModTime().UnixNano() && existing.ProbeError == "" {
 		return s.store.TouchMedia(ctx, itemID, scanID)
 	}
 

@@ -481,6 +481,13 @@ func (s *Store) UpsertMedia(ctx context.Context, media MediaFile, streams []Stre
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// A path belongs to whichever item currently provides it. Releasing an older
+	// claim keeps UNIQUE(path) from rejecting a file that moved between items,
+	// which is what happens once duplicates for one episode are resolved.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM media_files WHERE path = ? AND item_id <> ?`,
+		media.Path, media.ItemID); err != nil {
+		return 0, fmt.Errorf("release media path: %w", err)
+	}
 	var id int64
 	err = tx.QueryRowContext(ctx, `
 INSERT INTO media_files(item_id, path, size, mtime_ns, duration_ms, container, probe_error, last_seen_scan_id)

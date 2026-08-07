@@ -233,6 +233,88 @@ func TestEpisodeSurvivesReplacementEncode(t *testing.T) {
 	}
 }
 
+// Removing the duplicate hands the surviving item a file that another item still
+// claims in the catalog. The episode has to follow the file that remains rather
+// than keep pointing at the deleted one.
+func TestSurvivingEpisodeAdoptsRemainingDuplicateFile(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	season := filepath.Join(root, "tv", "Robot Chicken", "Season 10")
+	newer := filepath.Join(season, "Robot Chicken - S10E17 - Hemorrhoids HDTV-1080p.mkv")
+	older := filepath.Join(season, "Robot Chicken - S10E17 - Hemorrhoids WEBDL-1080p.mkv")
+	writeTestFileContent(t, newer, "the file in use")
+	writeTestFileContent(t, older, "the leftover duplicate")
+	catalog, scanner := newTVScanner(t, root)
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+	episodes := tvEpisodes(t, catalog)
+	if len(episodes) != 1 {
+		t.Fatalf("episodes = %+v, want 1", episodes)
+	}
+	kept, err := catalog.Item(ctx, episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Media == nil || kept.Media.Path != newer {
+		t.Fatalf("expected the sorted-first file to win, got %+v", kept.Media)
+	}
+	if _, err := catalog.SetProgress(ctx, kept.ID, 120_000, 600_000); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce a catalog written before episodes were keyed by number, where the
+	// duplicate file has its own item and, crucially, its own media row holding
+	// the path the surviving episode is about to inherit.
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", filepath.Join(root, "tv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, ParentID: kept.ParentID,
+		SourceKey: "file:Robot Chicken/Season 10/" + filepath.Base(older),
+		Kind:      "episode", Title: "Episode 17", SeasonNumber: 10,
+		EpisodeNumber: 17, EpisodeEndNumber: 17, ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(older)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertMedia(ctx, store.MediaFile{
+		ItemID: legacyID, Path: older, Size: info.Size(), MTimeNS: info.ModTime().UnixNano(),
+		DurationMS: 600_000, LastSeenScanID: scanID,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+	episodes = tvEpisodes(t, catalog)
+	if len(episodes) != 1 {
+		t.Fatalf("episodes after cleanup = %+v, want 1", episodes)
+	}
+	after, err := catalog.Item(ctx, episodes[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ID != kept.ID {
+		t.Fatalf("cleanup created a new episode: %d became %d", kept.ID, after.ID)
+	}
+	if after.Media == nil || after.Media.Path != older {
+		t.Fatalf("episode still points at the deleted file: %+v", after.Media)
+	}
+	if after.Progress == nil || after.Progress.ResumePositionMS != 120_000 {
+		t.Fatalf("cleanup lost playback state: %+v", after.Progress)
+	}
+}
+
 func TestDuplicateEpisodeFilesResolveToOneEpisode(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
