@@ -31,12 +31,14 @@ The catalog contains durable playback state and manual artwork selections.
 `loom developer reset` is destructive and is not a normal schema upgrade path.
 
 - Add a focused one-shot migration from the currently deployed schema.
-- Stop Loom and create a mode `0600` temporary database backup under `/tmp`
-  before deploying. Let the new binary perform the migration on startup.
+- Run `loom backup` before deploying, then stop Loom and let the new binary
+  perform the migration on startup. `loom backup` snapshots the running catalog
+  with `VACUUM INTO` and prints the path; do not copy `loom.db` by hand, because
+  WAL mode leaves recent commits in `loom.db-wal`.
 - Verify the schema version, foreign-key integrity, playback state, and manual
   artwork selections before considering the migration complete.
-- Report the temporary backup path and leave it for normal system cleanup after
-  successful validation. If migration or validation fails, retain the backup
+- Report the snapshot path and leave it for normal system cleanup after
+  successful validation. If migration or validation fails, retain the snapshot
   and report it as the restoration source. Never treat `/tmp` as durable backup
   storage.
 - Because Loom has one deployment, remove the migration and its legacy tests

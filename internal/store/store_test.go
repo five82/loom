@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -509,5 +510,70 @@ func TestLastScansReportsNewestFinishedScanPerLibrary(t *testing.T) {
 	got.FinishedAt = ""
 	if got != want[0] {
 		t.Fatalf("last scan = %+v, want %+v", got, want[0])
+	}
+}
+
+func TestBackupSnapshotsLiveCatalog(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "loom.db")
+	catalog, err := Open(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Arrival (2016)", Kind: "movie",
+		Title: "Arrival", Year: 2016, ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertMedia(ctx, MediaFile{
+		ItemID: itemID, Path: "/movies/Arrival (2016)/Arrival (2016).mkv",
+		Size: 100, MTimeNS: 20, DurationMS: 600_000, LastSeenScanID: scanID,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetProgress(ctx, itemID, 120_000, 600_000); err != nil {
+		t.Fatal(err)
+	}
+
+	// The catalog stays open throughout, as it would be under a serving daemon.
+	destination := filepath.Join(dir, "snapshot.db")
+	if err := Backup(ctx, source, destination); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("snapshot mode = %v, want -rw-------", info.Mode().Perm())
+	}
+
+	snapshot, err := Open(destination)
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	defer func() { _ = snapshot.Close() }()
+	item, err := snapshot.Item(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Title != "Arrival" || item.Progress == nil || item.Progress.PositionMS != 120_000 {
+		t.Fatalf("snapshot lost catalog or playback state: %+v", item)
+	}
+
+	if err := Backup(ctx, source, destination); err == nil {
+		t.Fatal("Backup overwrote an existing snapshot")
+	}
+	if err := Backup(ctx, filepath.Join(dir, "missing.db"), filepath.Join(dir, "other.db")); err == nil {
+		t.Fatal("Backup of a missing catalog succeeded")
 	}
 }

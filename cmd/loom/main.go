@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -48,7 +49,8 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(
 		newStartCommand(), newStopCommand(), newRestartCommand(), newStatusCommand(),
 		newScanCommand(), newUnmatchedCommand(), newSearchCommand(), newMatchCommand(),
-		newLogsCommand(), newConfigCommand(), newDeveloperCommand(), newDaemonCommand(),
+		newLogsCommand(), newBackupCommand(), newConfigCommand(), newDeveloperCommand(),
+		newDaemonCommand(),
 	)
 	return root
 }
@@ -388,6 +390,39 @@ func newMatchCommand() *cobra.Command {
 				return fmt.Errorf("daemon returned HTTP status %d", status)
 			}
 			fmt.Printf("Matched item %d to TMDB %d\n", itemID, tmdbID)
+			return nil
+		},
+	}
+}
+
+func newBackupCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "backup [path]",
+		Short: "Write a consistent snapshot of the catalog database",
+		Long: `Write a consistent snapshot of the catalog database and print its path.
+
+The snapshot is taken with SQLite's VACUUM INTO, so it is safe to run while the
+daemon is serving and Loom does not need to be stopped. The snapshot is created
+with mode 0600 and an existing file is never overwritten.
+
+Without a path the snapshot is written to a timestamped file in the system
+temporary directory, which is suitable for a pre-migration safety copy but is
+not durable backup storage.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			destination := filepath.Join(os.TempDir(),
+				"loom-"+time.Now().UTC().Format("20060102T150405Z")+".db")
+			if len(args) == 1 {
+				destination = args[0]
+			}
+			if err := store.Backup(command.Context(), cfg.DBPath(), destination); err != nil {
+				return err
+			}
+			fmt.Println(destination)
 			return nil
 		},
 	}

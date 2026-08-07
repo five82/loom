@@ -52,6 +52,32 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Backup writes a consistent snapshot of the catalog at source to destination.
+// Copying loom.db from the filesystem is not safe: WAL mode leaves recent
+// commits in loom.db-wal, so a plain copy can be torn or stale unless the daemon
+// is stopped first. VACUUM INTO reads through a single transaction instead, so
+// the daemon can keep serving, and it refuses to overwrite an existing file.
+func Backup(ctx context.Context, source, destination string) error {
+	if _, err := os.Stat(source); err != nil {
+		return fmt.Errorf("open catalog for backup: %w", err)
+	}
+	db, err := sql.Open("sqlite", source)
+	if err != nil {
+		return fmt.Errorf("open catalog for backup: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", destination); err != nil {
+		return fmt.Errorf("back up catalog to %q: %w", destination, err)
+	}
+	// VACUUM INTO creates the snapshot under the process umask, which normally
+	// leaves it world-readable. Backups routinely land in a shared directory
+	// such as /tmp, so tighten the mode before returning.
+	if err := os.Chmod(destination, 0o600); err != nil {
+		return fmt.Errorf("restrict backup permissions: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ensureSchema() error {
 	var version int
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {

@@ -83,6 +83,20 @@ loom stop
 to become ready. `loom stop` requests a graceful shutdown over that socket. A
 PID file is not used.
 
+To snapshot the catalog before a risky change:
+
+```bash
+loom backup [path]
+```
+
+This writes a consistent copy of `loom.db` with SQLite's `VACUUM INTO` and
+prints its path, so the daemon does not have to be stopped and a running scan is
+not disturbed. The snapshot is created with mode `0600` and an existing file is
+never overwritten. Without a path it lands in a timestamped file under `/tmp`,
+which is fine for a pre-migration safety copy but is not durable backup storage.
+Copying `loom.db` by hand is not equivalent: WAL mode keeps recent commits in a
+separate `loom.db-wal` file.
+
 To return Loom to a clean state during development:
 
 ```bash
