@@ -141,6 +141,25 @@ JOIN items show ON show.id = season.parent_id
 WHERE i.available = 1 AND i.kind = 'episode' AND i.tmdb_id = 0 AND show.tmdb_id <> 0
 ORDER BY show.title, i.season_number, i.episode_number`,
 }, {
+	// The check above names the episodes that kept a placeholder title, which
+	// is the visible half of a numbering disagreement. The invisible half is
+	// worse: metadata is written per episode number, so when the local
+	// numbering splits an episode the provider counts once, every later file
+	// in the season sits in the slot of its neighbour and gets a confidently
+	// wrong title. The overflow off the end of the provider's list is what
+	// surfaces, so an affected season is one holding both matched and
+	// unmatched episodes, and the matched ones cannot be trusted either.
+	name: "seasons whose numbering disagrees with TMDB",
+	query: `SELECT show.title || ' S' || season.season_number || ' (' ||
+    SUM(i.tmdb_id <> 0) || ' matched, ' || SUM(i.tmdb_id = 0) || ' unmatched)'
+FROM items i
+JOIN items season ON season.id = i.parent_id
+JOIN items show ON show.id = season.parent_id
+WHERE i.available = 1 AND i.kind = 'episode' AND show.tmdb_id <> 0
+GROUP BY season.id
+HAVING SUM(i.tmdb_id = 0) > 0
+ORDER BY show.title, season.season_number`,
+}, {
 	// Seasons and episodes fall back to the show's artwork, so only the two
 	// kinds that have to supply their own are checked.
 	name: "titles without a poster",

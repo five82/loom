@@ -190,6 +190,25 @@ func TestAuditFindsCatalogProblems(t *testing.T) {
 	}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
+	// A matched episode beside the unmatched one, which is what makes the
+	// season suspect: the numbering ran past the end of the provider's list,
+	// so this episode is sitting in a slot that may describe its neighbour.
+	matchedEpisode, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tv, ParentID: &season, SourceKey: "show:Show:season:1:episode:2-2",
+		Kind: "episode", Title: "S01E02", SeasonNumber: 1, EpisodeNumber: 2, ScanID: tvScan,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, matchedEpisode, MetadataUpdate{TMDBID: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertMedia(ctx, MediaFile{
+		ItemID: matchedEpisode, Path: "/tv/Show/S01E02.mkv", Size: 1, MTimeNS: 1,
+		DurationMS: 1000, LastSeenScanID: tvScan,
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	orphan, err := catalog.UpsertItem(ctx, ItemInput{
 		LibraryID: tv, SourceKey: "show:Show:season:2", Kind: "season",
 		Title: "Season 2", SeasonNumber: 2, ScanID: tvScan,
@@ -217,7 +236,8 @@ func TestAuditFindsCatalogProblems(t *testing.T) {
 		"movies without a director":                  1,
 		"movies without genres":                      1,
 		"episodes of a matched show without a match": 1,
-		"titles without a poster":                    3,
+		"seasons whose numbering disagrees with TMDB": 1,
+		"titles without a poster":                     3,
 	}
 	if len(counts) != len(want) {
 		t.Fatalf("audit reported %d checks, want %d", len(counts), len(want))
@@ -249,6 +269,13 @@ func TestAuditFindsCatalogProblems(t *testing.T) {
 		if finding.Check == "episodes of a matched show without a match" &&
 			!strings.Contains(finding.Matches[0], "Show S01E01") {
 			t.Errorf("unmatched episode named %q, want the show and episode number",
+				finding.Matches[0])
+		}
+		// The point of the season check is that the matched episodes beside an
+		// unmatched one are suspect, so both counts have to be reported.
+		if finding.Check == "seasons whose numbering disagrees with TMDB" &&
+			!strings.Contains(finding.Matches[0], "Show S1 (1 matched, 1 unmatched)") {
+			t.Errorf("suspect season named %q, want the show, season, and both counts",
 				finding.Matches[0])
 		}
 	}
