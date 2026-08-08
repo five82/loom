@@ -749,8 +749,9 @@ func TestCombinedEpisodeMetadata(t *testing.T) {
 }
 
 // clearDetailsLoaded reproduces a row matched by an older Loom, which is the
-// state the schema migration leaves behind and the only thing that asks
-// AutoMatch to re-read details for a match it already has.
+// only thing that asks AutoMatch to re-read details for a match it already has.
+// A migration adding a provider field clears the flag for exactly this reason,
+// so the backfill has to keep working between one of those and the next.
 func clearDetailsLoaded(t *testing.T, path string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)

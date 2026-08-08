@@ -86,9 +86,6 @@ func (s *Store) ensureSchema() error {
 	if version == 10 {
 		return nil
 	}
-	if version == 9 {
-		return s.migrateDetailFieldsV10()
-	}
 	if version != 0 {
 		return fmt.Errorf("database schema version %d is unsupported; run loom developer reset", version)
 	}
@@ -221,35 +218,6 @@ PRAGMA user_version = 10;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit database schema: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) migrateDetailFieldsV10() error {
-	// genres_loaded became details_loaded because the same fetch now carries
-	// every provider-owned field, not just a movie's genres. Clearing it makes
-	// the next scan re-read details for everything already matched, which is
-	// the only way the new columns get filled for an existing catalog.
-	const migration = `
-ALTER TABLE items RENAME COLUMN genres_loaded TO details_loaded;
-ALTER TABLE items ADD COLUMN tagline TEXT NOT NULL DEFAULT '';
-ALTER TABLE items ADD COLUMN vote_average REAL NOT NULL DEFAULT 0;
-ALTER TABLE items ADD COLUMN content_rating TEXT NOT NULL DEFAULT '';
-ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT '';
-ALTER TABLE items ADD COLUMN total_seasons INTEGER NOT NULL DEFAULT 0;
-UPDATE items SET details_loaded = 0;
-PRAGMA user_version = 10;
-`
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin detail field migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(migration); err != nil {
-		return fmt.Errorf("migrate detail fields to schema version 10: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit detail field migration: %w", err)
 	}
 	return nil
 }
