@@ -621,10 +621,14 @@ type Item struct {
 	// browsing the catalog can tell that a replacement encode landed without
 	// asking for playback details item by item. Nothing else about an item
 	// changes when its file is replaced.
-	MediaTag  string     `json:"media_tag,omitempty"`
-	AddedAt   string     `json:"added_at"`
-	UpdatedAt string     `json:"updated_at"`
-	Media     *MediaFile `json:"media,omitempty"`
+	MediaTag string `json:"media_tag,omitempty"`
+	// DurationMS mirrors the item's file runtime on every listing, because a
+	// runtime-based shelf ("a quick watch tonight") cannot afford a detail
+	// request per movie. Zero for items without a file of their own.
+	DurationMS int64      `json:"duration_ms,omitempty"`
+	AddedAt    string     `json:"added_at"`
+	UpdatedAt  string     `json:"updated_at"`
+	Media      *MediaFile `json:"media,omitempty"`
 	Progress  *Progress  `json:"progress,omitempty"`
 	// EpisodeCount and UnwatchedCount roll episode playback state up to the show
 	// and season rows that a grid actually draws, so a client can badge a show
@@ -684,6 +688,7 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
     COALESCE((SELECT id FROM media_files WHERE item_id = i.id), 0),
     COALESCE((SELECT size FROM media_files WHERE item_id = i.id), 0),
     COALESCE((SELECT mtime_ns FROM media_files WHERE item_id = i.id), 0),
+    COALESCE((SELECT duration_ms FROM media_files WHERE item_id = i.id), 0),
     i.added_at, i.updated_at,
     CASE WHEN i.kind IN ('show', 'season') THEN (
         SELECT COUNT(*) FROM items e
@@ -872,7 +877,7 @@ func scanItemFields(row rowScanner, trailing ...any) (Item, error) {
 		&item.Status, &item.TotalSeasons, &item.DetailsLoaded, &item.PosterImageID, &item.PosterImageTag,
 		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
 		&item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag,
-		&mediaID, &mediaSize, &mediaMTimeNS, &item.AddedAt, &item.UpdatedAt,
+		&mediaID, &mediaSize, &mediaMTimeNS, &item.DurationMS, &item.AddedAt, &item.UpdatedAt,
 		&item.EpisodeCount, &item.UnwatchedCount,
 	}
 	if err := row.Scan(append(destinations, trailing...)...); err != nil {
@@ -1298,15 +1303,77 @@ ORDER BY c.last_watched DESC, i.id LIMIT ?`, limit)
 	return result, nil
 }
 
+// RecentlyAdded rolls episodes up to their show, so a batch of new episodes
+// makes one card carrying the newest episode's arrival instead of one card per
+// file wearing the same season poster.
 func (s *Store) RecentlyAdded(ctx context.Context, limit int) ([]Item, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`
-FROM items i WHERE i.available = 1 AND i.kind IN ('movie', 'episode', 'unmatched')
-ORDER BY i.added_at DESC, i.id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `
+WITH additions AS (
+    SELECT CASE WHEN a.kind = 'episode' THEN season.parent_id ELSE a.id END AS top_id,
+        MAX(a.added_at) AS newest_added, MAX(a.id) AS newest_id
+    FROM items a
+    LEFT JOIN items season ON a.kind = 'episode' AND season.id = a.parent_id
+    WHERE a.available = 1 AND a.kind IN ('movie', 'episode', 'unmatched')
+    GROUP BY top_id
+)
+SELECT `+itemColumns+`
+FROM additions n JOIN items i ON i.id = n.top_id
+WHERE i.available = 1
+ORDER BY n.newest_added DESC, n.newest_id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list recently added: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var result []Item
+	for rows.Next() {
+		item, err := scanItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := s.populateGenres(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// RecentlyPlayed lists finished movies and fully watched shows, most recently
+// finished first, so a client can offer rewatches. Episodes roll up to their
+// show, and a show qualifies only once nothing beneath it is left unwatched;
+// a show mid-run belongs to Next Up, not here.
+func (s *Store) RecentlyPlayed(ctx context.Context, limit int) ([]Item, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+WITH finished AS (
+    SELECT CASE WHEN w.kind = 'episode' THEN season.parent_id ELSE w.id END AS top_id,
+        MAX(p.updated_at) AS finished_at
+    FROM playback_state p
+    JOIN items w ON w.id = p.item_id AND w.available = 1 AND w.kind IN ('movie', 'episode')
+    LEFT JOIN items season ON w.kind = 'episode' AND season.id = w.parent_id
+    WHERE p.played = 1
+    GROUP BY top_id
+)
+SELECT `+itemColumns+`
+FROM finished f JOIN items i ON i.id = f.top_id
+WHERE i.available = 1 AND (i.kind != 'show' OR NOT EXISTS (
+    SELECT 1 FROM items e LEFT JOIN playback_state ep ON ep.item_id = e.id
+    WHERE e.kind = 'episode' AND e.available = 1 AND COALESCE(ep.played, 0) = 0
+        AND `+episodesBelow+`))
+ORDER BY f.finished_at DESC, i.id LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recently played: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var result []Item

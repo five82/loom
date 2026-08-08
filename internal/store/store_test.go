@@ -1273,3 +1273,169 @@ func TestShowAndSeasonWatchedCounts(t *testing.T) {
 		t.Fatalf("counts after a removal = %d/%d, want 2/0", show.EpisodeCount, show.UnwatchedCount)
 	}
 }
+
+// seedMixedCatalog records two movies and two two-episode shows across their
+// own libraries and returns the item ids keyed by a short name. Insertion
+// order is movie1, showA (+e1, e2), movie2, showB (+e1, e2).
+func seedMixedCatalog(t *testing.T, ctx context.Context, catalog *Store) map[string]int64 {
+	t.Helper()
+	ids := map[string]int64{}
+	movieLibrary, movieScan, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tvLibrary, tvScan, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	movie := func(name string, title string) {
+		id, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: movieLibrary, SourceKey: title, Kind: "movie", Title: title, ScanID: movieScan,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := catalog.UpsertMedia(ctx, MediaFile{
+			ItemID: id, Path: "/movies/" + title + ".mkv", Size: 100, MTimeNS: 20,
+			DurationMS: 600_000, Container: "matroska", LastSeenScanID: movieScan,
+		}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = id
+	}
+	show := func(name string, title string) {
+		showID, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: tvLibrary, SourceKey: title, Kind: "show", Title: title, ScanID: tvScan,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seasonID, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: tvLibrary, ParentID: &showID, SourceKey: title + "/season-1",
+			Kind: "season", Title: "Season 1", SeasonNumber: 1, ScanID: tvScan,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for number := 1; number <= 2; number++ {
+			key := fmt.Sprintf("%s/S01E%02d", title, number)
+			id, err := catalog.UpsertItem(ctx, ItemInput{
+				LibraryID: tvLibrary, ParentID: &seasonID, SourceKey: key, Kind: "episode",
+				Title: key, SeasonNumber: 1, EpisodeNumber: number, ScanID: tvScan,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := catalog.UpsertMedia(ctx, MediaFile{
+				ItemID: id, Path: "/tv/" + key + ".mkv", Size: 100, MTimeNS: 20,
+				DurationMS: 1_800_000, Container: "matroska", LastSeenScanID: tvScan,
+			}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			ids[fmt.Sprintf("%s-e%d", name, number)] = id
+		}
+		ids[name] = showID
+	}
+	movie("movie1", "First Movie")
+	show("showA", "Show A")
+	movie("movie2", "Second Movie")
+	show("showB", "Show B")
+	if err := catalog.FinishScan(ctx, movieLibrary, movieScan, 2, 2, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, tvLibrary, tvScan, 6, 6, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+func TestRecentlyAddedRollsEpisodesUpToShow(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	ids := seedMixedCatalog(t, ctx, catalog)
+	items, err := catalog.RecentlyAdded(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each show appears once, as itself, sorted by its newest episode's
+	// arrival: showB's episodes landed after movie2, which landed after
+	// showA's, which landed after movie1.
+	want := []int64{ids["showB"], ids["movie2"], ids["showA"], ids["movie1"]}
+	if len(items) != len(want) {
+		t.Fatalf("recently added = %+v, want ids %v", items, want)
+	}
+	for index, id := range want {
+		if items[index].ID != id {
+			t.Fatalf("recently added[%d] = %d (%s %s), want %d",
+				index, items[index].ID, items[index].Kind, items[index].Title, id)
+		}
+	}
+	if items[1].DurationMS != 600_000 || items[0].DurationMS != 0 {
+		t.Fatalf("listing durations = movie %d, show %d; want 600000 and 0",
+			items[1].DurationMS, items[0].DurationMS)
+	}
+}
+
+func TestRecentlyPlayed(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	ids := seedMixedCatalog(t, ctx, catalog)
+	finish := func(name string, durationMS int64) {
+		t.Helper()
+		if _, err := catalog.SetProgress(ctx, ids[name], durationMS, durationMS); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if items, err := catalog.RecentlyPlayed(ctx, 20); err != nil {
+		t.Fatal(err)
+	} else if len(items) != 0 {
+		t.Fatalf("recently played listed unwatched items: %+v", items)
+	}
+
+	// movie1 finished, movie2 abandoned mid-watch, showA finished in full,
+	// showB half watched. Only completed titles qualify, shows roll up to one
+	// entry, and the most recent finish leads.
+	finish("movie1", 600_000)
+	if _, err := catalog.SetProgress(ctx, ids["movie2"], 60_000, 600_000); err != nil {
+		t.Fatal(err)
+	}
+	finish("showA-e1", 1_800_000)
+	finish("showA-e2", 1_800_000)
+	finish("showB-e1", 1_800_000)
+
+	items, err := catalog.RecentlyPlayed(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int64{ids["showA"], ids["movie1"]}
+	if len(items) != len(want) {
+		t.Fatalf("recently played = %+v, want ids %v", items, want)
+	}
+	for index, id := range want {
+		if items[index].ID != id {
+			t.Fatalf("recently played[%d] = %d (%s %s), want %d",
+				index, items[index].ID, items[index].Kind, items[index].Title, id)
+		}
+	}
+
+	// Finishing showB promotes it above everything watched earlier.
+	finish("showB-e2", 1_800_000)
+	items, err = catalog.RecentlyPlayed(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 || items[0].ID != ids["showB"] {
+		t.Fatalf("recently played after finishing showB = %+v", items)
+	}
+}

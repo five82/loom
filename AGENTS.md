@@ -6,7 +6,8 @@ This file provides guidance when working with code in this repository.
 
 - Do not create git branches unless explicitly instructed.
 - Run `./check-ci.sh` before handing work back.
-- Deploy with `./deploy.sh`; do not stop, build, and install by hand.
+- Deploy with `./deploy.sh` on the box hosting Loom; do not stop, build, and
+  install by hand, and do not deploy from a machine that is not the Loom host.
 
 ## Project
 
@@ -28,10 +29,17 @@ Loom and Takeup are developed and deployed together for one user. Do not preserv
 
 ## Deployment
 
-Loom runs on the development machine itself, so a deploy is local. `./deploy.sh`
-snapshots the catalog, builds a static binary, stops the daemon, installs over
-the `loom` on `PATH` while keeping the previous binary beside it, and starts
-again. It does not run tests; run `./check-ci.sh` first.
+Loom currently runs on the Linux development box, while coordinated Loom and
+Takeup changes are often written on the MacBook; eventually Loom will move to a
+dedicated server. `./deploy.sh` deploys to the machine it runs on, so it only
+makes sense on the Loom host. When working on the MacBook, do not deploy:
+finish the change, run `./check-ci.sh`, and hand back for the user to deploy on
+the Loom box. To exercise API changes before that deploy, build the binary and
+run a scratch instance locally with its own config and state directory.
+
+`./deploy.sh` snapshots the catalog, builds a static binary, stops the daemon,
+installs over the `loom` on `PATH` while keeping the previous binary beside it,
+and starts again. It does not run tests; run `./check-ci.sh` first.
 
 - The daemon runs from the `loom` on `PATH`, normally `~/go/bin/loom`.
 - Durable state lives in `~/.local/state/loom`: `loom.db`, `daemon.log`, and
@@ -82,5 +90,5 @@ go test -race ./...                    # Race detector
 golangci-lint run                      # Lint
 ./check-ci.sh                          # Full CI (recommended before handoff)
 ./check-deps.sh                        # Dependency health check
-./deploy.sh                            # Build and deploy to the local server
+./deploy.sh                            # Build and deploy (Loom host only)
 ```
