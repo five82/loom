@@ -229,16 +229,20 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 
 // applyDetails writes one TMDB detail fetch to the catalog. Only movies browse
 // by genre, so a show's genres are left unstored rather than filling a facet
-// nothing reads.
+// nothing reads. Directors are movie-only for a different reason: TV credits
+// them per episode, and a show's own crew list rarely names anyone a viewer
+// would call its director.
 func (s *Service) applyDetails(ctx context.Context, item *store.Item, details tmdb.Details) error {
 	update := store.MetadataUpdate{
 		TMDBID: details.ID, Title: details.Title, Year: details.Year,
 		Overview: details.Overview, Tagline: details.Tagline, ReleaseDate: details.ReleaseDate,
 		VoteAverage: details.VoteAverage, ContentRating: details.ContentRating,
 		Status: details.Status, TotalSeasons: details.TotalSeasons,
+		Credits: storeCredits(details.Cast, nil),
 	}
 	if item.Kind == "movie" {
 		update.Genres = storeGenres(details.Genres)
+		update.Credits = storeCredits(details.Cast, details.Directors)
 	}
 	return s.store.UpdateMetadata(ctx, item.ID, update)
 }
@@ -668,6 +672,31 @@ func combinedEpisodeMetadata(item store.Item, episodes map[int]tmdb.Episode) (st
 		TMDBID: first.ID, Title: strings.Join(titles, " / "), Overview: strings.Join(overviews, "\n\n"),
 		ReleaseDate: first.ReleaseDate,
 	}, true
+}
+
+// maxCast bounds how deep a cast list Loom keeps. TMDB bills fifty or more
+// people on a big film, and the tail is uncredited extras that would pad every
+// detail screen and match name searches nobody meant.
+const maxCast = 15
+
+// storeCredits puts directors ahead of the cast, which is the order a detail
+// screen reads them in and the order the store preserves.
+func storeCredits(cast []tmdb.CastCredit, directors []tmdb.Director) []store.Credit {
+	credits := make([]store.Credit, 0, len(directors)+min(len(cast), maxCast))
+	for _, director := range directors {
+		credits = append(credits, store.Credit{
+			PersonID: director.ID, Name: director.Name, Role: "director",
+		})
+	}
+	for index, member := range cast {
+		if index == maxCast {
+			break
+		}
+		credits = append(credits, store.Credit{
+			PersonID: member.ID, Name: member.Name, Role: "actor", Character: member.Character,
+		})
+	}
+	return credits
 }
 
 func storeGenres(genres []tmdb.Genre) []store.Genre {

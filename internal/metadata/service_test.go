@@ -778,3 +778,92 @@ func encodedPNG(t *testing.T, fill color.Color) []byte {
 	}
 	return output.Bytes()
 }
+
+func TestStoreCreditsLeadWithDirectorsAndCapTheCast(t *testing.T) {
+	cast := make([]tmdb.CastCredit, 0, maxCast+5)
+	for index := range maxCast + 5 {
+		cast = append(cast, tmdb.CastCredit{
+			ID: int64(index + 100), Name: fmt.Sprintf("Actor %d", index),
+			Character: fmt.Sprintf("Role %d", index),
+		})
+	}
+	credits := storeCredits(cast, []tmdb.Director{{ID: 1, Name: "A Director"}})
+	if len(credits) != maxCast+1 {
+		t.Fatalf("credit count = %d, want %d", len(credits), maxCast+1)
+	}
+	if credits[0].Role != "director" || credits[0].Name != "A Director" {
+		t.Fatalf("directors do not lead: %+v", credits[0])
+	}
+	// The cap keeps the top of the billing, not an arbitrary slice of it.
+	if credits[1].Name != "Actor 0" || credits[maxCast].Name != fmt.Sprintf("Actor %d", maxCast-1) {
+		t.Fatalf("capped cast = %+v", credits[1:])
+	}
+	for _, credit := range credits[1:] {
+		if credit.Role != "actor" || credit.Character == "" {
+			t.Fatalf("cast credit lost its role or character: %+v", credit)
+		}
+	}
+}
+
+// TestShowCreditsOmitDirectors covers the split between the two kinds: TV
+// credits directors per episode, so a show's own crew list is not stored.
+func TestShowCreditsOmitDirectors(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	catalog, err := store.Open(filepath.Join(root, "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	service := New(catalog, nil, filepath.Join(root, "images"), slog.Default())
+	details := tmdb.Details{
+		ID: 1, Title: "Title",
+		Cast:      []tmdb.CastCredit{{ID: 10, Name: "An Actor", Character: "Someone"}},
+		Directors: []tmdb.Director{{ID: 20, Name: "A Director"}},
+	}
+
+	for _, testCase := range []struct {
+		kind        string
+		library     string
+		path        string
+		wantCredits int
+	}{
+		{kind: "movie", library: "movies", path: "/movies", wantCredits: 2},
+		{kind: "show", library: "tv", path: "/tv", wantCredits: 1},
+	} {
+		libraryID, scanID, err := catalog.StartScan(ctx, testCase.library, testCase.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		itemID, err := catalog.UpsertItem(ctx, store.ItemInput{
+			LibraryID: libraryID, SourceKey: testCase.kind, Kind: testCase.kind,
+			Title: "Title", ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item, err := catalog.Item(ctx, itemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.applyDetails(ctx, item, details); err != nil {
+			t.Fatal(err)
+		}
+		if err := catalog.FinishScan(ctx, libraryID, scanID, 1, 1, 0, nil); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := catalog.Item(ctx, itemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(stored.Credits) != testCase.wantCredits {
+			t.Fatalf("%s credits = %+v", testCase.kind, stored.Credits)
+		}
+		if stored.Credits[len(stored.Credits)-1].Name != "An Actor" {
+			t.Fatalf("%s lost its cast: %+v", testCase.kind, stored.Credits)
+		}
+		if testCase.kind == "show" && stored.Credits[0].Role != "actor" {
+			t.Fatalf("show stored a director: %+v", stored.Credits)
+		}
+	}
+}

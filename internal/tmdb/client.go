@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,21 @@ type Genre struct {
 	Name string `json:"name"`
 }
 
+// CastCredit is one billed acting role. Character is routinely empty on older
+// or lightly edited entries, so a client cannot rely on it to label a name.
+type CastCredit struct {
+	ID        int64
+	Name      string
+	Character string
+}
+
+// Director is one directing credit. TV directors are per episode rather than
+// per show, so this is only meaningful for movies.
+type Director struct {
+	ID   int64
+	Name string
+}
+
 type Details struct {
 	ID           int64
 	Title        string
@@ -129,17 +145,22 @@ type Details struct {
 	// status tells a detail screen nothing.
 	Status       string
 	TotalSeasons int
+	// Cast is every billed role in TMDB's billing order. Callers take the top
+	// of it rather than storing a whole crawl of bit parts.
+	Cast      []CastCredit
+	Directors []Director
 }
 
 func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Details, error) {
 	if mediaType != "movie" && mediaType != "tv" {
 		return Details{}, fmt.Errorf("unsupported TMDB media type %q", mediaType)
 	}
-	// Certifications live on a sibling endpoint that append_to_response folds
-	// into this response, so a detail screen still costs one request.
-	appended := "release_dates"
+	// Certifications and credits live on sibling endpoints that
+	// append_to_response folds into this response, so a detail screen still
+	// costs one request.
+	appended := "release_dates,credits"
 	if mediaType == "tv" {
-		appended = "content_ratings"
+		appended = "content_ratings,credits"
 	}
 	var raw struct {
 		ID              int64   `json:"id"`
@@ -169,6 +190,19 @@ func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Detai
 				Rating  string `json:"rating"`
 			} `json:"results"`
 		} `json:"content_ratings"`
+		Credits struct {
+			Cast []struct {
+				ID        int64  `json:"id"`
+				Name      string `json:"name"`
+				Character string `json:"character"`
+				Order     int    `json:"order"`
+			} `json:"cast"`
+			Crew []struct {
+				ID   int64  `json:"id"`
+				Name string `json:"name"`
+				Job  string `json:"job"`
+			} `json:"crew"`
+		} `json:"credits"`
 	}
 	values := url.Values{"append_to_response": {appended}}
 	if err := c.get(ctx, "/"+mediaType+"/"+strconv.FormatInt(id, 10), values, &raw); err != nil {
@@ -207,6 +241,25 @@ func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Detai
 		ID: raw.ID, Title: title, Tagline: raw.Tagline, Overview: raw.Overview, ReleaseDate: date,
 		Year: dateYear(date), PosterPath: raw.PosterPath, BackdropPath: raw.BackdropPath,
 		Genres: raw.Genres, VoteAverage: raw.VoteAverage, ContentRating: rating,
+	}
+	// TMDB usually returns cast in billing order but does not promise it, and
+	// the order field is what the billing actually is.
+	sort.SliceStable(raw.Credits.Cast, func(a, b int) bool {
+		return raw.Credits.Cast[a].Order < raw.Credits.Cast[b].Order
+	})
+	for _, member := range raw.Credits.Cast {
+		if member.Name == "" {
+			continue
+		}
+		details.Cast = append(details.Cast, CastCredit{
+			ID: member.ID, Name: member.Name, Character: member.Character,
+		})
+	}
+	for _, member := range raw.Credits.Crew {
+		if member.Job != "Director" || member.Name == "" {
+			continue
+		}
+		details.Directors = append(details.Directors, Director{ID: member.ID, Name: member.Name})
 	}
 	if mediaType == "tv" {
 		details.Status, details.TotalSeasons = raw.Status, raw.NumberOfSeasons

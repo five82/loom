@@ -27,9 +27,41 @@ func TestDetailsIncludesGenres(t *testing.T) {
 	}
 }
 
+func TestDetailsReadCastInBillingOrderAndDirectorsFromCrew(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/movie/10" {
+			t.Fatalf("unexpected details request: %s", r.URL.String())
+		}
+		// The cast arrives out of billing order, one entry has no name, and the
+		// crew holds jobs other than directing.
+		_, _ = fmt.Fprint(w, `{"id":10,"title":"Movie","credits":{"cast":[
+{"id":3,"name":"Third Billed","character":"Third","order":2},
+{"id":1,"name":"Top Billed","character":"Lead","order":0},
+{"id":9,"name":"","character":"Nobody","order":1}],
+"crew":[{"id":50,"name":"A Writer","job":"Screenplay"},
+{"id":51,"name":"A Director","job":"Director"},
+{"id":52,"name":"A Producer","job":"Producer"}]}}`)
+	}))
+	defer server.Close()
+
+	client := NewWithURLs("key", "en-US", server.URL, server.URL, server.Client())
+	details, err := client.Details(context.Background(), "movie", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details.Cast) != 2 || details.Cast[0].Name != "Top Billed" ||
+		details.Cast[0].Character != "Lead" || details.Cast[1].ID != 3 {
+		t.Fatalf("details cast = %+v", details.Cast)
+	}
+	if len(details.Directors) != 1 || details.Directors[0].ID != 51 ||
+		details.Directors[0].Name != "A Director" {
+		t.Fatalf("details directors = %+v", details.Directors)
+	}
+}
+
 func TestMovieDetailsReadCertificationFromAppendedReleaseDates(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/movie/10" || r.URL.Query().Get("append_to_response") != "release_dates" {
+		if r.URL.Path != "/movie/10" || r.URL.Query().Get("append_to_response") != "release_dates,credits" {
 			t.Fatalf("unexpected details request: %s", r.URL.String())
 		}
 		// The theatrical window carries the certification here and the digital
@@ -56,7 +88,7 @@ func TestMovieDetailsReadCertificationFromAppendedReleaseDates(t *testing.T) {
 
 func TestShowDetailsReadStatusAndContentRating(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/tv/20" || r.URL.Query().Get("append_to_response") != "content_ratings" {
+		if r.URL.Path != "/tv/20" || r.URL.Query().Get("append_to_response") != "content_ratings,credits" {
 			t.Fatalf("unexpected details request: %s", r.URL.String())
 		}
 		_, _ = fmt.Fprint(w, `{"id":20,"name":"Show","tagline":"Still going","vote_average":8.25,

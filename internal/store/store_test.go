@@ -204,6 +204,108 @@ func TestMovieGenres(t *testing.T) {
 	}
 }
 
+func TestItemCredits(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Arrival", Kind: "movie", Title: "Arrival", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, itemID, MetadataUpdate{TMDBID: 329865, Credits: []Credit{
+		{PersonID: 1, Name: "Denis Villeneuve", Role: "director"},
+		{PersonID: 2, Name: "Amy Adams", Role: "actor", Character: "Louise Banks"},
+		{PersonID: 3, Name: "Jeremy Renner", Role: "actor", Character: "Ian Donnelly"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := catalog.Item(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.Credits) != 3 {
+		t.Fatalf("item credits = %+v", item.Credits)
+	}
+	if item.Credits[0].Role != "director" || item.Credits[0].Name != "Denis Villeneuve" {
+		t.Fatalf("credits lost the order they were stored in: %+v", item.Credits)
+	}
+	if item.Credits[1].Character != "Louise Banks" || item.Credits[2].Name != "Jeremy Renner" {
+		t.Fatalf("cast credits = %+v", item.Credits[1:])
+	}
+
+	// A grid draws posters, not cast lists, so listing an item leaves credits off.
+	listed, err := catalog.ListItems(ctx, ListOptions{LibraryKind: "movies", TopLevel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Credits != nil {
+		t.Fatalf("browse listing carried credits: %+v", listed)
+	}
+
+	// Rematching replaces credits wholesale rather than merging with the old cast.
+	if err := catalog.UpdateMetadata(ctx, itemID, MetadataUpdate{TMDBID: 329865, Credits: []Credit{
+		{PersonID: 2, Name: "Amy Adams", Role: "actor", Character: "Dr. Louise Banks"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	item, err = catalog.Item(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.Credits) != 1 || item.Credits[0].Character != "Dr. Louise Banks" {
+		t.Fatalf("replaced credits = %+v", item.Credits)
+	}
+}
+
+// TestCreditsToleratesOneActorBilledTwice covers TMDB listing the same person
+// for two characters, which would otherwise collide on the credit primary key.
+func TestCreditsToleratesOneActorBilledTwice(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Twins", Kind: "movie", Title: "Twins", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, itemID, MetadataUpdate{TMDBID: 7, Credits: []Credit{
+		{PersonID: 4, Name: "Player One", Role: "actor", Character: "First"},
+		{PersonID: 4, Name: "Player One", Role: "actor", Character: "Second"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	item, err := catalog.Item(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(item.Credits) != 1 || item.Credits[0].Character != "First" {
+		t.Fatalf("double billing = %+v", item.Credits)
+	}
+}
+
 func TestSearchItems(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
@@ -293,6 +395,77 @@ func TestSearchItems(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("literal wildcard search results = %+v", results)
+	}
+}
+
+func TestSearchRanksTitleMatchesAboveCreditedPeople(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sicarioID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Sicario", Kind: "movie", Title: "Sicario", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	criminalID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Emily the Criminal", Kind: "movie",
+		Title: "Emily the Criminal", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, sicarioID, MetadataUpdate{TMDBID: 273481, Credits: []Credit{
+		{PersonID: 1, Name: "Denis Villeneuve", Role: "director"},
+		{PersonID: 2, Name: "Emily Blunt", Role: "actor", Character: "Kate Macer"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, criminalID, MetadataUpdate{TMDBID: 830788}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 2, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The title that names the query wins even though a cast member shares the
+	// word, which is the whole point of ranking person matches last.
+	results, err := catalog.SearchItems(ctx, "Emily", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 || results[0].ID != criminalID || results[1].ID != sicarioID {
+		t.Fatalf("mixed title and cast search = %+v", results)
+	}
+
+	// A name no title contains still finds the film.
+	results, err = catalog.SearchItems(ctx, "villeneuve", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != sicarioID {
+		t.Fatalf("director search = %+v", results)
+	}
+
+	// Search results are browse rows, so they carry no cast list either.
+	if results[0].Credits != nil {
+		t.Fatalf("search result carried credits: %+v", results[0].Credits)
+	}
+
+	results, err = catalog.SearchItems(ctx, "Kate Macer", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("character names are not searchable: %+v", results)
 	}
 }
 
@@ -406,8 +579,8 @@ func TestCurrentSchemaCreatedAndAccepted(t *testing.T) {
 	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 10 {
-		t.Fatalf("created schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("created schema version = %d, want 11", version)
 	}
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)

@@ -12,10 +12,19 @@ type Genre struct {
 	Name string `json:"name"`
 }
 
+// Credit is one person's billing on an item. Only the roles a detail screen
+// shows are stored: the billed cast and, for movies, the director.
+type Credit struct {
+	PersonID  int64  `json:"person_id"`
+	Name      string `json:"name"`
+	Role      string `json:"role"`
+	Character string `json:"character,omitempty"`
+}
+
 // MetadataUpdate applies provider-owned fields to one catalog item. It always
 // carries everything the provider gave for that item, so applying one replaces
-// the item's genres wholesale and marks its details loaded rather than letting
-// a caller write half a record.
+// the item's genres and credits wholesale and marks its details loaded rather
+// than letting a caller write half a record.
 type MetadataUpdate struct {
 	TMDBID        int64
 	Title         string
@@ -24,6 +33,7 @@ type MetadataUpdate struct {
 	Tagline       string
 	ReleaseDate   string
 	Genres        []Genre
+	Credits       []Credit
 	VoteAverage   float64
 	ContentRating string
 	Status        string
@@ -44,6 +54,9 @@ func (s *Store) UpdateMetadata(ctx context.Context, itemID int64, metadata Metad
 		return err
 	}
 	if err := replaceGenres(ctx, tx, itemID, metadata.Genres); err != nil {
+		return err
+	}
+	if err := replaceCredits(ctx, tx, itemID, metadata.Credits); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -91,6 +104,55 @@ INSERT INTO item_genres(item_id, genre_id) VALUES (?, ?)`, itemID, genre.ID); er
 		}
 	}
 	return nil
+}
+
+// replaceCredits stores credits in the order given, which is the order a detail
+// screen renders them. People outlive the credit that introduced them, so rows
+// in people are left behind when an item is rematched; the table is small and
+// the next item to credit that person reuses the row.
+func replaceCredits(ctx context.Context, tx *sql.Tx, itemID int64, credits []Credit) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM item_credits WHERE item_id = ?`, itemID); err != nil {
+		return fmt.Errorf("clear item credits: %w", err)
+	}
+	for ordering, credit := range credits {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO people(id, name) VALUES (?, ?)
+ON CONFLICT(id) DO UPDATE SET name = excluded.name`, credit.PersonID, credit.Name); err != nil {
+			return fmt.Errorf("upsert person %d: %w", credit.PersonID, err)
+		}
+		// TMDB bills one actor twice when they play two characters. Keeping the
+		// first billing is closer to how the credits read than failing the
+		// whole update over it.
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO item_credits(item_id, person_id, role, character, ordering) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT DO NOTHING`, itemID, credit.PersonID, credit.Role, credit.Character, ordering); err != nil {
+			return fmt.Errorf("associate item credit %d: %w", credit.PersonID, err)
+		}
+	}
+	return nil
+}
+
+// populateCredits fills credits for a single item. Grids never draw a cast
+// list, so this is left out of the list queries that populateGenres serves.
+func (s *Store) populateCredits(ctx context.Context, itemID int64) ([]Credit, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT c.person_id, p.name, c.role, c.character
+FROM item_credits c JOIN people p ON p.id = c.person_id
+WHERE c.item_id = ?
+ORDER BY c.ordering, c.person_id`, itemID)
+	if err != nil {
+		return nil, fmt.Errorf("list item credits: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var credits []Credit
+	for rows.Next() {
+		var credit Credit
+		if err := rows.Scan(&credit.PersonID, &credit.Name, &credit.Role, &credit.Character); err != nil {
+			return nil, fmt.Errorf("scan item credit: %w", err)
+		}
+		credits = append(credits, credit)
+	}
+	return credits, rows.Err()
 }
 
 type GenreSummary struct {

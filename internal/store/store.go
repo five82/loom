@@ -83,7 +83,7 @@ func (s *Store) ensureSchema() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version == 10 {
+	if version == 11 {
 		return nil
 	}
 	if version != 0 {
@@ -146,6 +146,19 @@ CREATE TABLE item_genres (
     PRIMARY KEY (item_id, genre_id)
 );
 CREATE INDEX item_genres_genre_idx ON item_genres(genre_id, item_id);
+CREATE TABLE people (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE item_credits (
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    person_id INTEGER NOT NULL REFERENCES people(id),
+    role TEXT NOT NULL CHECK (role IN ('actor', 'director')),
+    character TEXT NOT NULL DEFAULT '',
+    ordering INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (item_id, person_id, role)
+);
+CREATE INDEX item_credits_person_idx ON item_credits(person_id, item_id);
 CREATE TABLE media_files (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL UNIQUE REFERENCES items(id) ON DELETE CASCADE,
@@ -206,7 +219,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -585,8 +598,11 @@ type Item struct {
 	Tagline          string  `json:"tagline,omitempty"`
 	ReleaseDate      string  `json:"release_date,omitempty"`
 	Genres           []Genre `json:"genres,omitempty"`
-	VoteAverage      float64 `json:"vote_average,omitempty"`
-	ContentRating    string  `json:"content_rating,omitempty"`
+	// Credits are served only by Item, because a grid draws posters and a cast
+	// list belongs to the detail screen.
+	Credits       []Credit `json:"credits,omitempty"`
+	VoteAverage   float64  `json:"vote_average,omitempty"`
+	ContentRating string   `json:"content_rating,omitempty"`
 	// Status and TotalSeasons cover a show's whole run rather than the part of
 	// it this library holds, so a detail screen can say a show ended without
 	// implying every season is here.
@@ -700,6 +716,10 @@ type SearchResult struct {
 	SeasonTitle string `json:"season_title,omitempty"`
 }
 
+// SearchItems matches titles and credited people. A person match sorts below
+// every title match, so searching an actor who shares a word with a title still
+// puts the title first, and a result that only matched a cast member never
+// buries the film the query named.
 func (s *Store) SearchItems(ctx context.Context, searchQuery string, limit, offset int) ([]SearchResult, error) {
 	searchQuery = strings.TrimSpace(searchQuery)
 	if searchQuery == "" {
@@ -717,16 +737,20 @@ FROM items i
 LEFT JOIN items season ON i.kind = 'episode' AND season.id = i.parent_id
 LEFT JOIN items series ON series.id = season.parent_id
 WHERE i.available = 1 AND i.kind IN ('movie', 'show', 'episode')
-    AND instr(lower(i.title), lower(?)) > 0
+    AND (instr(lower(i.title), lower(?)) > 0
+        OR i.id IN (SELECT c.item_id FROM item_credits c JOIN people p ON p.id = c.person_id
+            WHERE instr(lower(p.name), lower(?)) > 0))
 ORDER BY CASE
         WHEN i.title = ? COLLATE NOCASE THEN 0
         WHEN substr(i.title, 1, length(?)) = ? COLLATE NOCASE THEN 1
-        ELSE 2
+        WHEN instr(lower(i.title), lower(?)) > 0 THEN 2
+        ELSE 3
     END,
     i.title COLLATE NOCASE,
     CASE i.kind WHEN 'movie' THEN 0 WHEN 'show' THEN 1 ELSE 2 END,
     i.id
-LIMIT ? OFFSET ?`, searchQuery, searchQuery, searchQuery, searchQuery, limit, offset)
+LIMIT ? OFFSET ?`, searchQuery, searchQuery, searchQuery, searchQuery, searchQuery,
+		searchQuery, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("search items: %w", err)
 	}
@@ -912,6 +936,11 @@ FROM items i WHERE i.id = ? AND i.available = 1`, id)
 		return nil, err
 	}
 	item = items[0]
+	credits, err := s.populateCredits(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	item.Credits = credits
 	media, err := s.mediaForItem(ctx, id)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
