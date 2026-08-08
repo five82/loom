@@ -110,6 +110,28 @@ which is fine for a pre-migration safety copy but is not durable backup storage.
 Copying `loom.db` by hand is not equivalent: WAL mode keeps recent commits in a
 separate `loom.db-wal` file.
 
+To check the catalog for problems:
+
+```bash
+loom developer audit
+loom developer audit --json
+```
+
+The audit reads the database directly and writes nothing, so it runs whether or
+not the daemon is up, which is what makes it useful after a migration that
+prevents startup. It reports two kinds of finding. Integrity checks describe
+states that should never occur — foreign key violations, a playable item with no
+media file, a probe that failed or reported no duration, a season or episode
+whose parent is wrong, a director credited on something that is not a movie, an
+artwork row pointing at a file that is gone — and the command exits non-zero
+when any of them match. Metadata checks describe what TMDB did not supply, such
+as a short film with no billed cast or an episode whose local numbering the
+provider disagrees with. Those are routine, so they are reported without failing
+the command. Each finding names up to five offending rows.
+
+Run the audit once a scan has finished, because a scan in progress moves items
+through these states legitimately.
+
 To return Loom to a clean state during development:
 
 ```bash

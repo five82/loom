@@ -53,7 +53,11 @@ The catalog contains durable playback state and manual artwork selections.
 - Verify the schema version, foreign-key integrity, playback state, and manual
   artwork selections before considering the migration complete. Record the
   counts before deploying, because the check that matters is that they are
-  unchanged afterwards. `deploy.sh` does none of this.
+  unchanged afterwards. `deploy.sh` does none of this. `loom developer audit`
+  covers the schema version, foreign-key integrity, and the catalog invariants;
+  run it before and after so the comparison is against a known starting point.
+  Playback state and manual artwork selections it does not count, so check those
+  separately.
 - A migration that only adds a table leaves existing rows untouched, and the
   scanner skips any media file whose size and mtime still match the catalog. If
   new columns or tables are meant to be filled from the files themselves, the

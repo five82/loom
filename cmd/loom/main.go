@@ -467,13 +467,8 @@ func newDeveloperCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "developer",
 		Short: "Developer utilities",
-		Long: `Developer utilities.
-
-Reset stops the daemon and deletes everything under paths.state_dir except the
-loaded config.toml. This includes the database, catalog, playback state,
-metadata, daemon logs, and downloaded artwork. Media libraries and config.toml
-are not modified.`,
 	}
+	command.AddCommand(newAuditCommand())
 	command.AddCommand(&cobra.Command{
 		Use:   "reset",
 		Short: "Delete all state while keeping media and config.toml",
@@ -499,6 +494,78 @@ modified.`,
 		},
 	})
 	return command
+}
+
+func newAuditCommand() *cobra.Command {
+	var asJSON bool
+	command := &cobra.Command{
+		Use:   "audit",
+		Short: "Check the catalog for integrity problems and metadata gaps",
+		Long: `Check the catalog for integrity problems and metadata gaps.
+
+The audit reads the database directly and writes nothing, so it runs whether or
+not the daemon is up. Integrity checks describe states that should never occur
+and exit non-zero when any of them match. The metadata checks below them
+describe what a provider did not supply, which is routine for an obscure title,
+so they are reported without failing the command.
+
+A scan in progress moves items through these states, so run the audit once the
+scan has finished.`,
+		RunE: func(command *cobra.Command, _ []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			if _, err := os.Stat(cfg.DBPath()); err != nil {
+				return fmt.Errorf("open catalog for audit: %w", err)
+			}
+			catalog, err := store.Open(cfg.DBPath())
+			if err != nil {
+				return err
+			}
+			defer func() { _ = catalog.Close() }()
+			report, err := catalog.Audit(command.Context())
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				if err := printJSON(report); err != nil {
+					return err
+				}
+			} else {
+				printAuditReport(cfg.DBPath(), report)
+			}
+			if report.IntegrityProblems() > 0 {
+				return errors.New("catalog integrity problems found")
+			}
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&asJSON, "json", false, "Output JSON")
+	return command
+}
+
+func printAuditReport(dbPath string, report store.AuditReport) {
+	fmt.Printf("Catalog: %s (schema version %d)\n", dbPath, report.SchemaVersion)
+	section := ""
+	for _, finding := range report.Findings {
+		heading := "Metadata"
+		if finding.Integrity {
+			heading = "Integrity"
+		}
+		if heading != section {
+			fmt.Printf("\n%s\n", heading)
+			section = heading
+		}
+		fmt.Printf("  %5d  %s\n", finding.Count, finding.Check)
+		for _, sample := range finding.Samples {
+			fmt.Printf("           %s\n", sample)
+		}
+		if finding.Count > len(finding.Samples) {
+			fmt.Printf("           and %d more\n", finding.Count-len(finding.Samples))
+		}
+	}
+	fmt.Printf("\n%d integrity problems\n", report.IntegrityProblems())
 }
 
 func newDaemonCommand() *cobra.Command {
