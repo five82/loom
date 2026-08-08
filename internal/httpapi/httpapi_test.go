@@ -746,3 +746,82 @@ func testCatalog(t *testing.T) (*store.Store, int64, int64, []byte) {
 	}
 	return catalog, itemID, mediaID, contents
 }
+
+func TestCollectionsServeOwnedMembersOnly(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := store.Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Three of the five Star Wars films, and one lone Nolan film. The Star Wars
+	// shelf is served without the two it is missing; the Nolan shelf is not
+	// served at all, because one movie under a heading is worse than none.
+	for _, movie := range []struct {
+		tmdbID      int64
+		title       string
+		year        int
+		releaseDate string
+	}{
+		{1892, "Return of the Jedi", 1983, "1983-05-25"},
+		{11, "Star Wars", 1977, "1977-05-25"},
+		{1891, "The Empire Strikes Back", 1980, "1980-05-20"},
+		{27205, "Inception", 2010, "2010-07-15"},
+	} {
+		itemID, err := catalog.UpsertItem(ctx, store.ItemInput{
+			LibraryID: libraryID, SourceKey: movie.title, Kind: "movie",
+			Title: movie.title, Year: movie.year, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := catalog.UpdateMetadata(ctx, itemID, store.MetadataUpdate{
+			TMDBID: movie.tmdbID, Title: movie.title, Year: movie.year,
+			ReleaseDate: movie.releaseDate,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 4, 4, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1))
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+	response, err := http.Get(server.URL + "/api/v1/collections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Items []struct {
+			Slug  string       `json:"slug"`
+			Title string       `json:"title"`
+			Items []store.Item `json:"items"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		_ = response.Body.Close()
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("collections status = %d", response.StatusCode)
+	}
+	if len(body.Items) != 1 {
+		t.Fatalf("expected only the Star Wars shelf: %+v", body.Items)
+	}
+	shelf := body.Items[0]
+	if shelf.Slug != "star-wars" || shelf.Title != "Star Wars" || len(shelf.Items) != 3 {
+		t.Fatalf("unexpected shelf: %+v", shelf)
+	}
+	// Release order, not the alphabetical order a grid would use.
+	if shelf.Items[0].Title != "Star Wars" || shelf.Items[1].Title != "The Empire Strikes Back" ||
+		shelf.Items[2].Title != "Return of the Jedi" {
+		t.Fatalf("shelf is not in release order: %+v", shelf.Items)
+	}
+}
