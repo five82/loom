@@ -140,7 +140,7 @@ func TestMovieGenres(t *testing.T) {
 		prestoID:  {{ID: 878, Name: "Science Fiction"}, {ID: 16, Name: "Animation"}},
 	} {
 		if err := catalog.UpdateMetadata(ctx, id, MetadataUpdate{
-			TMDBID: id, Genres: genres, GenresLoaded: true,
+			TMDBID: id, Genres: genres,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -166,11 +166,13 @@ func TestMovieGenres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].ID != arrivalID || len(items[0].Genres) != 2 || !items[0].GenresLoaded {
+	if len(items) != 1 || items[0].ID != arrivalID || len(items[0].Genres) != 2 || !items[0].DetailsLoaded {
 		t.Fatalf("drama movies = %+v", items)
 	}
 
-	if err := catalog.UpdateGenres(ctx, arrivalID, []Genre{{ID: 53, Name: "Thriller"}}); err != nil {
+	if err := catalog.UpdateMetadata(ctx, arrivalID, MetadataUpdate{
+		TMDBID: arrivalID, Genres: []Genre{{ID: 53, Name: "Thriller"}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	item, err := catalog.Item(ctx, arrivalID)
@@ -221,7 +223,7 @@ func TestSearchItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := catalog.UpdateMetadata(ctx, movieID, MetadataUpdate{
-		TMDBID: 1, GenresLoaded: true, Genres: []Genre{{ID: 18, Name: "Drama"}},
+		TMDBID: 1, Genres: []Genre{{ID: 18, Name: "Drama"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -404,8 +406,8 @@ func TestCurrentSchemaCreatedAndAccepted(t *testing.T) {
 	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 {
-		t.Fatalf("created schema version = %d, want 9", version)
+	if version != 10 {
+		t.Fatalf("created schema version = %d, want 10", version)
 	}
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)
@@ -417,6 +419,84 @@ func TestCurrentSchemaCreatedAndAccepted(t *testing.T) {
 	}
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestDetailFieldMigrationFromV9 covers the one-shot v9 upgrade and goes away
+// once the deployed catalog has migrated.
+func TestDetailFieldMigrationFromV9(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "loom.db")
+	catalog, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Arrival", Kind: "movie", Title: "Arrival", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, itemID, MetadataUpdate{
+		TMDBID: 329865, Title: "Arrival", Overview: "Linguist", Tagline: "Why are they here?",
+		Genres: []Genre{{ID: 18, Name: "Drama"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewind the shape rather than restating the whole v9 schema, so the
+	// migration runs against a real table that only differs where it should.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+ALTER TABLE items RENAME COLUMN details_loaded TO genres_loaded;
+ALTER TABLE items DROP COLUMN tagline;
+ALTER TABLE items DROP COLUMN vote_average;
+ALTER TABLE items DROP COLUMN content_rating;
+ALTER TABLE items DROP COLUMN status;
+ALTER TABLE items DROP COLUMN total_seasons;
+PRAGMA user_version = 9;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err = Open(path)
+	if err != nil {
+		t.Fatalf("migrate v9 catalog: %v", err)
+	}
+	defer func() { _ = catalog.Close() }()
+	var version int
+	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 10 {
+		t.Fatalf("migrated schema version = %d, want 10", version)
+	}
+	item, err := catalog.Item(ctx, itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The match and its genres survive; the new fields arrive empty and are
+	// marked unloaded so the next scan refetches them.
+	if item.TMDBID != 329865 || item.Overview != "Linguist" || len(item.Genres) != 1 {
+		t.Fatalf("migration lost metadata: %+v", item)
+	}
+	if item.Tagline != "" || item.ContentRating != "" || item.DetailsLoaded {
+		t.Fatalf("migration should leave details unloaded: %+v", item)
 	}
 }
 

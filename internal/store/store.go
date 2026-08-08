@@ -83,8 +83,11 @@ func (s *Store) ensureSchema() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version == 9 {
+	if version == 10 {
 		return nil
+	}
+	if version == 9 {
+		return s.migrateDetailFieldsV10()
 	}
 	if version != 0 {
 		return fmt.Errorf("database schema version %d is unsupported; run loom developer reset", version)
@@ -122,7 +125,12 @@ CREATE TABLE items (
     tmdb_id INTEGER NOT NULL DEFAULT 0,
     overview TEXT NOT NULL DEFAULT '',
     release_date TEXT NOT NULL DEFAULT '',
-    genres_loaded INTEGER NOT NULL DEFAULT 0,
+    tagline TEXT NOT NULL DEFAULT '',
+    vote_average REAL NOT NULL DEFAULT 0,
+    content_rating TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    total_seasons INTEGER NOT NULL DEFAULT 0,
+    details_loaded INTEGER NOT NULL DEFAULT 0,
     available INTEGER NOT NULL DEFAULT 1,
     last_seen_scan_id INTEGER NOT NULL,
     added_at TEXT NOT NULL,
@@ -201,7 +209,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;
 `
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -213,6 +221,35 @@ PRAGMA user_version = 9;
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit database schema: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) migrateDetailFieldsV10() error {
+	// genres_loaded became details_loaded because the same fetch now carries
+	// every provider-owned field, not just a movie's genres. Clearing it makes
+	// the next scan re-read details for everything already matched, which is
+	// the only way the new columns get filled for an existing catalog.
+	const migration = `
+ALTER TABLE items RENAME COLUMN genres_loaded TO details_loaded;
+ALTER TABLE items ADD COLUMN tagline TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN vote_average REAL NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN content_rating TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT '';
+ALTER TABLE items ADD COLUMN total_seasons INTEGER NOT NULL DEFAULT 0;
+UPDATE items SET details_loaded = 0;
+PRAGMA user_version = 10;
+`
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin detail field migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(migration); err != nil {
+		return fmt.Errorf("migrate detail fields to schema version 10: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit detail field migration: %w", err)
 	}
 	return nil
 }
@@ -577,17 +614,25 @@ type Item struct {
 	EpisodeEndNumber int     `json:"episode_end_number,omitempty"`
 	TMDBID           int64   `json:"tmdb_id,omitempty"`
 	Overview         string  `json:"overview,omitempty"`
+	Tagline          string  `json:"tagline,omitempty"`
 	ReleaseDate      string  `json:"release_date,omitempty"`
 	Genres           []Genre `json:"genres,omitempty"`
-	GenresLoaded     bool    `json:"-"`
-	PosterImageID    int64   `json:"poster_image_id,omitempty"`
-	PosterImageTag   string  `json:"poster_image_tag,omitempty"`
-	BackdropImageID  int64   `json:"backdrop_image_id,omitempty"`
-	BackdropImageTag string  `json:"backdrop_image_tag,omitempty"`
-	LogoImageID      int64   `json:"logo_image_id,omitempty"`
-	LogoImageTag     string  `json:"logo_image_tag,omitempty"`
-	ThumbImageID     int64   `json:"thumb_image_id,omitempty"`
-	ThumbImageTag    string  `json:"thumb_image_tag,omitempty"`
+	VoteAverage      float64 `json:"vote_average,omitempty"`
+	ContentRating    string  `json:"content_rating,omitempty"`
+	// Status and TotalSeasons cover a show's whole run rather than the part of
+	// it this library holds, so a detail screen can say a show ended without
+	// implying every season is here.
+	Status           string `json:"status,omitempty"`
+	TotalSeasons     int    `json:"total_seasons,omitempty"`
+	DetailsLoaded    bool   `json:"-"`
+	PosterImageID    int64  `json:"poster_image_id,omitempty"`
+	PosterImageTag   string `json:"poster_image_tag,omitempty"`
+	BackdropImageID  int64  `json:"backdrop_image_id,omitempty"`
+	BackdropImageTag string `json:"backdrop_image_tag,omitempty"`
+	LogoImageID      int64  `json:"logo_image_id,omitempty"`
+	LogoImageTag     string `json:"logo_image_tag,omitempty"`
+	ThumbImageID     int64  `json:"thumb_image_id,omitempty"`
+	ThumbImageTag    string `json:"thumb_image_tag,omitempty"`
 	// MediaTag identifies the file version the last scan recorded, so a client
 	// browsing the catalog can tell that a replacement encode landed without
 	// asking for playback details item by item. Nothing else about an item
@@ -606,8 +651,8 @@ type Item struct {
 }
 
 const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
-    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.release_date,
-    i.genres_loaded,
+    i.episode_number, i.episode_end_number, i.tmdb_id, i.overview, i.tagline, i.release_date,
+    i.vote_average, i.content_rating, i.status, i.total_seasons, i.details_loaded,
     COALESCE(
         (SELECT id FROM images WHERE item_id = i.id AND kind = 'poster'),
         (SELECT id FROM images WHERE item_id = CASE
@@ -831,7 +876,8 @@ func scanItemFields(row rowScanner, trailing ...any) (Item, error) {
 	destinations := []any{
 		&item.ID, &item.LibraryID, &parent, &item.Kind, &item.Title, &item.Year,
 		&item.SeasonNumber, &item.EpisodeNumber, &item.EpisodeEndNumber, &item.TMDBID,
-		&item.Overview, &item.ReleaseDate, &item.GenresLoaded, &item.PosterImageID, &item.PosterImageTag,
+		&item.Overview, &item.Tagline, &item.ReleaseDate, &item.VoteAverage, &item.ContentRating,
+		&item.Status, &item.TotalSeasons, &item.DetailsLoaded, &item.PosterImageID, &item.PosterImageTag,
 		&item.BackdropImageID, &item.BackdropImageTag, &item.LogoImageID,
 		&item.LogoImageTag, &item.ThumbImageID, &item.ThumbImageTag,
 		&mediaID, &mediaSize, &mediaMTimeNS, &item.AddedAt, &item.UpdatedAt,

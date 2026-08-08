@@ -112,41 +112,115 @@ type Genre struct {
 type Details struct {
 	ID           int64
 	Title        string
+	Tagline      string
 	Overview     string
 	ReleaseDate  string
 	Year         int
 	PosterPath   string
 	BackdropPath string
 	Genres       []Genre
+	VoteAverage  float64
+	// ContentRating is the certification for the client's own region, such as
+	// "R" or "TV-14". TMDB publishes one per country, so an absent region
+	// simply leaves this empty rather than borrowing another country's board.
+	ContentRating string
+	// Status and TotalSeasons describe a show's whole run, including seasons
+	// this library does not hold. Both stay zero for movies, whose "Released"
+	// status tells a detail screen nothing.
+	Status       string
+	TotalSeasons int
 }
 
 func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Details, error) {
 	if mediaType != "movie" && mediaType != "tv" {
 		return Details{}, fmt.Errorf("unsupported TMDB media type %q", mediaType)
 	}
-	var raw struct {
-		ID           int64   `json:"id"`
-		Title        string  `json:"title"`
-		Name         string  `json:"name"`
-		Overview     string  `json:"overview"`
-		ReleaseDate  string  `json:"release_date"`
-		FirstAirDate string  `json:"first_air_date"`
-		PosterPath   string  `json:"poster_path"`
-		BackdropPath string  `json:"backdrop_path"`
-		Genres       []Genre `json:"genres"`
+	// Certifications live on a sibling endpoint that append_to_response folds
+	// into this response, so a detail screen still costs one request.
+	appended := "release_dates"
+	if mediaType == "tv" {
+		appended = "content_ratings"
 	}
-	if err := c.get(ctx, "/"+mediaType+"/"+strconv.FormatInt(id, 10), nil, &raw); err != nil {
+	var raw struct {
+		ID              int64   `json:"id"`
+		Title           string  `json:"title"`
+		Name            string  `json:"name"`
+		Tagline         string  `json:"tagline"`
+		Overview        string  `json:"overview"`
+		ReleaseDate     string  `json:"release_date"`
+		FirstAirDate    string  `json:"first_air_date"`
+		PosterPath      string  `json:"poster_path"`
+		BackdropPath    string  `json:"backdrop_path"`
+		Genres          []Genre `json:"genres"`
+		VoteAverage     float64 `json:"vote_average"`
+		Status          string  `json:"status"`
+		NumberOfSeasons int     `json:"number_of_seasons"`
+		ReleaseDates    struct {
+			Results []struct {
+				Country      string `json:"iso_3166_1"`
+				ReleaseDates []struct {
+					Certification string `json:"certification"`
+				} `json:"release_dates"`
+			} `json:"results"`
+		} `json:"release_dates"`
+		ContentRatings struct {
+			Results []struct {
+				Country string `json:"iso_3166_1"`
+				Rating  string `json:"rating"`
+			} `json:"results"`
+		} `json:"content_ratings"`
+	}
+	values := url.Values{"append_to_response": {appended}}
+	if err := c.get(ctx, "/"+mediaType+"/"+strconv.FormatInt(id, 10), values, &raw); err != nil {
 		return Details{}, err
 	}
 	title, date := raw.Title, raw.ReleaseDate
 	if mediaType == "tv" {
 		title, date = raw.Name, raw.FirstAirDate
 	}
-	return Details{
-		ID: raw.ID, Title: title, Overview: raw.Overview, ReleaseDate: date,
+	region := c.certificationRegion()
+	rating := ""
+	if mediaType == "tv" {
+		for _, result := range raw.ContentRatings.Results {
+			if strings.EqualFold(result.Country, region) {
+				rating = result.Rating
+				break
+			}
+		}
+	} else {
+		for _, result := range raw.ReleaseDates.Results {
+			if !strings.EqualFold(result.Country, region) {
+				continue
+			}
+			// A country lists one entry per release window (theatrical,
+			// digital, physical) and only some of them carry a certification.
+			for _, release := range result.ReleaseDates {
+				if release.Certification != "" {
+					rating = release.Certification
+					break
+				}
+			}
+			break
+		}
+	}
+	details := Details{
+		ID: raw.ID, Title: title, Tagline: raw.Tagline, Overview: raw.Overview, ReleaseDate: date,
 		Year: dateYear(date), PosterPath: raw.PosterPath, BackdropPath: raw.BackdropPath,
-		Genres: raw.Genres,
-	}, nil
+		Genres: raw.Genres, VoteAverage: raw.VoteAverage, ContentRating: rating,
+	}
+	if mediaType == "tv" {
+		details.Status, details.TotalSeasons = raw.Status, raw.NumberOfSeasons
+	}
+	return details, nil
+}
+
+// certificationRegion reads the country out of the configured language tag, so
+// "en-US" picks the MPA and TV Parental Guidelines ratings.
+func (c *Client) certificationRegion() string {
+	if _, after, found := strings.Cut(c.language, "-"); found && after != "" {
+		return strings.ToUpper(after)
+	}
+	return "US"
 }
 
 type Episode struct {

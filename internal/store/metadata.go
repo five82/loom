@@ -12,15 +12,22 @@ type Genre struct {
 	Name string `json:"name"`
 }
 
-// MetadataUpdate applies provider-owned fields to one catalog item.
+// MetadataUpdate applies provider-owned fields to one catalog item. It always
+// carries everything the provider gave for that item, so applying one replaces
+// the item's genres wholesale and marks its details loaded rather than letting
+// a caller write half a record.
 type MetadataUpdate struct {
-	TMDBID       int64
-	Title        string
-	Year         int
-	Overview     string
-	ReleaseDate  string
-	Genres       []Genre
-	GenresLoaded bool
+	TMDBID        int64
+	Title         string
+	Year          int
+	Overview      string
+	Tagline       string
+	ReleaseDate   string
+	Genres        []Genre
+	VoteAverage   float64
+	ContentRating string
+	Status        string
+	TotalSeasons  int
 }
 
 type contextExecer interface {
@@ -28,9 +35,6 @@ type contextExecer interface {
 }
 
 func (s *Store) UpdateMetadata(ctx context.Context, itemID int64, metadata MetadataUpdate) error {
-	if !metadata.GenresLoaded {
-		return updateMetadata(ctx, s.db, itemID, metadata)
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("update metadata transaction: %w", err)
@@ -51,11 +55,13 @@ func (s *Store) UpdateMetadata(ctx context.Context, itemID int64, metadata Metad
 func updateMetadata(ctx context.Context, db contextExecer, itemID int64, metadata MetadataUpdate) error {
 	result, err := db.ExecContext(ctx, `
 UPDATE items SET tmdb_id = ?, title = CASE WHEN ? = '' THEN title ELSE ? END,
-    year = CASE WHEN ? = 0 THEN year ELSE ? END, overview = ?, release_date = ?,
-    genres_loaded = CASE WHEN ? THEN 1 ELSE genres_loaded END, updated_at = ?
+    year = CASE WHEN ? = 0 THEN year ELSE ? END, overview = ?, tagline = ?, release_date = ?,
+    vote_average = ?, content_rating = ?, status = ?, total_seasons = ?,
+    details_loaded = 1, updated_at = ?
 WHERE id = ? AND available = 1`, metadata.TMDBID, metadata.Title, metadata.Title,
-		metadata.Year, metadata.Year, metadata.Overview, metadata.ReleaseDate,
-		metadata.GenresLoaded, now(), itemID)
+		metadata.Year, metadata.Year, metadata.Overview, metadata.Tagline, metadata.ReleaseDate,
+		metadata.VoteAverage, metadata.ContentRating, metadata.Status, metadata.TotalSeasons,
+		now(), itemID)
 	if err != nil {
 		return fmt.Errorf("update item metadata: %w", err)
 	}
@@ -65,34 +71,6 @@ WHERE id = ? AND available = 1`, metadata.TMDBID, metadata.Title, metadata.Title
 	}
 	if count == 0 {
 		return ErrNotFound
-	}
-	return nil
-}
-
-func (s *Store) UpdateGenres(ctx context.Context, itemID int64, genres []Genre) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("update genres transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `
-UPDATE items SET genres_loaded = 1, updated_at = ?
-WHERE id = ? AND available = 1 AND kind = 'movie'`, now(), itemID)
-	if err != nil {
-		return fmt.Errorf("mark movie genres loaded: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read updated genre item count: %w", err)
-	}
-	if count == 0 {
-		return ErrNotFound
-	}
-	if err := replaceGenres(ctx, tx, itemID, genres); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit genre update: %w", err)
 	}
 	return nil
 }

@@ -67,14 +67,17 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 	if item.Kind != "movie" && item.Kind != "show" {
 		return nil
 	}
+	mediaType := metadataType(item.Kind)
 	if item.TMDBID != 0 {
 		var details *tmdb.Details
-		if item.Kind == "movie" && !item.GenresLoaded {
-			loaded, err := s.tmdb.Details(ctx, "movie", item.TMDBID)
+		if !item.DetailsLoaded {
+			// An item matched before a field existed carries none of it, and
+			// nothing else revisits a match that already has its TMDB id.
+			loaded, err := s.tmdb.Details(ctx, mediaType, item.TMDBID)
 			if err != nil {
 				return err
 			}
-			if err := s.store.UpdateGenres(ctx, item.ID, storeGenres(loaded.Genres)); err != nil {
+			if err := s.applyDetails(ctx, item, loaded); err != nil {
 				return err
 			}
 			details = &loaded
@@ -90,7 +93,6 @@ func (s *Service) AutoMatch(ctx context.Context, itemID int64) error {
 		}
 		return nil
 	}
-	mediaType := metadataType(item.Kind)
 	results, err := s.tmdb.Search(ctx, mediaType, item.Title, item.Year)
 	if err != nil {
 		return err
@@ -173,6 +175,15 @@ func (s *Service) backfillSeasonPosters(ctx context.Context, showID, tmdbID int6
 		}
 		details, err := s.tmdb.Season(ctx, tmdbID, season.SeasonNumber)
 		if err != nil {
+			// A season this library holds but TMDB does not is a numbering
+			// disagreement, not a provider outage, so it must not cost the rest
+			// of the scan its metadata the way a returned error would.
+			var httpErr *tmdb.HTTPError
+			if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+				s.logger.Warn("TMDB has no such season", "show_id", showID,
+					"tmdb_id", tmdbID, "season", season.SeasonNumber)
+				continue
+			}
 			return err
 		}
 		s.saveDefaultImage(ctx, season.ID, "poster", details.PosterPath)
@@ -193,15 +204,7 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	if err != nil {
 		return err
 	}
-	update := store.MetadataUpdate{
-		TMDBID: details.ID, Title: details.Title, Year: details.Year,
-		Overview: details.Overview, ReleaseDate: details.ReleaseDate,
-	}
-	if item.Kind == "movie" {
-		update.Genres = storeGenres(details.Genres)
-		update.GenresLoaded = true
-	}
-	if err := s.store.UpdateMetadata(ctx, itemID, update); err != nil {
+	if err := s.applyDetails(ctx, item, details); err != nil {
 		return err
 	}
 	identityChanged := item.TMDBID != 0 && item.TMDBID != details.ID
@@ -222,6 +225,22 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	}
 	s.logger.Info("metadata match applied", "item_id", itemID, "tmdb_id", tmdbID, "type", mediaType)
 	return nil
+}
+
+// applyDetails writes one TMDB detail fetch to the catalog. Only movies browse
+// by genre, so a show's genres are left unstored rather than filling a facet
+// nothing reads.
+func (s *Service) applyDetails(ctx context.Context, item *store.Item, details tmdb.Details) error {
+	update := store.MetadataUpdate{
+		TMDBID: details.ID, Title: details.Title, Year: details.Year,
+		Overview: details.Overview, Tagline: details.Tagline, ReleaseDate: details.ReleaseDate,
+		VoteAverage: details.VoteAverage, ContentRating: details.ContentRating,
+		Status: details.Status, TotalSeasons: details.TotalSeasons,
+	}
+	if item.Kind == "movie" {
+		update.Genres = storeGenres(details.Genres)
+	}
+	return s.store.UpdateMetadata(ctx, item.ID, update)
 }
 
 type ImageOption struct {

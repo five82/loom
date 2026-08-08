@@ -300,7 +300,7 @@ func TestMovieGenreAPI(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
 	if err := catalog.UpdateMetadata(context.Background(), itemID, store.MetadataUpdate{
-		TMDBID: 10, Title: "Movie", GenresLoaded: true,
+		TMDBID: 10, Title: "Movie",
 		Genres: []store.Genre{{ID: 878, Name: "Science Fiction"}},
 	}); err != nil {
 		t.Fatal(err)

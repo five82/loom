@@ -3,6 +3,7 @@ package metadata
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"image"
@@ -81,7 +82,7 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	if item.TMDBID != 329865 || item.Overview == "" || item.PosterImageID == 0 ||
 		item.BackdropImageID == 0 || item.LogoImageID == 0 || item.ThumbImageID == 0 ||
 		item.PosterImageTag == "" || item.LogoImageTag == "" || item.ThumbImageTag == "" ||
-		!item.GenresLoaded || len(item.Genres) != 2 || item.Genres[1].ID != 878 {
+		!item.DetailsLoaded || len(item.Genres) != 2 || item.Genres[1].ID != 878 {
 		t.Fatalf("metadata not applied: %+v", item)
 	}
 	backdrop, err := catalog.Image(ctx, item.BackdropImageID)
@@ -215,8 +216,75 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rematched.GenresLoaded || len(rematched.Genres) != 0 {
+	if !rematched.DetailsLoaded || len(rematched.Genres) != 0 {
 		t.Fatalf("genres survived identity change: %+v", rematched.Genres)
+	}
+}
+
+// A library can hold a season TMDB splits into its own entry, such as a sequel
+// miniseries filed under the original. That must not cost the rest of the scan
+// its metadata, because the scanner stops matching a library after one error.
+func TestAutoMatchSkipsSeasonTMDBDoesNotHave(t *testing.T) {
+	imageBytes := encodedPNG(t, color.RGBA{R: 255, A: 255})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/tv/100", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":100,"name":"Show","status":"Ended","number_of_seasons":1}`)
+	})
+	mux.HandleFunc("/tv/100/images", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"posters":[],"backdrops":[],"logos":[]}`)
+	})
+	mux.HandleFunc("/tv/100/season/1", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":1001,"poster_path":"/season.jpg","episodes":[]}`)
+	})
+	mux.HandleFunc("/tv/100/season/2", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"success":false,"status_code":34}`, http.StatusNotFound)
+	})
+	mux.HandleFunc("/images/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(imageBytes)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	catalog, err := store.Open(filepath.Join(root, "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, SourceKey: "Show", Kind: "show", Title: "Show", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, number := range []int{1, 2} {
+		if _, err := catalog.UpsertItem(ctx, store.ItemInput{
+			LibraryID: libraryID, ParentID: &showID, SourceKey: fmt.Sprintf("Show/S%d", number),
+			Kind: "season", Title: fmt.Sprintf("Season %d", number), SeasonNumber: number, ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	client := tmdb.NewWithURLs("key", "en-US", server.URL, server.URL+"/images", server.Client())
+	service := New(catalog, client, filepath.Join(root, "images"), slog.Default())
+	if err := service.Match(ctx, showID, 100); err != nil {
+		t.Fatalf("a season TMDB does not have should not fail the match: %v", err)
+	}
+	if err := service.AutoMatch(ctx, showID); err != nil {
+		t.Fatalf("a season TMDB does not have should not fail a later scan: %v", err)
+	}
+	item, err := catalog.Item(ctx, showID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != "Ended" || item.TotalSeasons != 1 {
+		t.Fatalf("show details = %+v", item)
 	}
 }
 
@@ -459,6 +527,7 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	if err := catalog.UpdateMetadata(ctx, itemID, store.MetadataUpdate{TMDBID: 10, Title: "Movie"}); err != nil {
 		t.Fatal(err)
 	}
+	clearDetailsLoaded(t, filepath.Join(root, "loom.db"))
 	client := tmdb.NewWithURLs("key", "en-US", server.URL, server.URL+"/images", server.Client())
 	service := New(catalog, client, filepath.Join(root, "images"), slog.Default())
 
@@ -470,7 +539,7 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	if item.PosterImageID == 0 || item.BackdropImageID == 0 || item.LogoImageID == 0 ||
-		item.ThumbImageID == 0 || !item.GenresLoaded || len(item.Genres) != 1 ||
+		item.ThumbImageID == 0 || !item.DetailsLoaded || len(item.Genres) != 1 ||
 		item.Genres[0].ID != 53 {
 		t.Fatalf("metadata was not backfilled: %+v", item)
 	}
@@ -676,6 +745,21 @@ func TestCombinedEpisodeMetadata(t *testing.T) {
 	})
 	if !ok || got.TMDBID != 10 || got.Title != "Part One / Part Two" || got.Overview != "First\n\nSecond" {
 		t.Fatalf("combined metadata = %+v, %v", got, ok)
+	}
+}
+
+// clearDetailsLoaded reproduces a row matched by an older Loom, which is the
+// state the schema migration leaves behind and the only thing that asks
+// AutoMatch to re-read details for a match it already has.
+func clearDetailsLoaded(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec("UPDATE items SET details_loaded = 0"); err != nil {
+		t.Fatal(err)
 	}
 }
 
