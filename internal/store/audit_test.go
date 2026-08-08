@@ -79,7 +79,7 @@ func TestAuditPassesOnACompleteCatalog(t *testing.T) {
 	}
 	for _, finding := range report.Findings {
 		if finding.Count != 0 {
-			t.Errorf("%s matched %d rows: %v", finding.Check, finding.Count, finding.Samples)
+			t.Errorf("%s matched %d rows: %v", finding.Check, finding.Count, finding.Matches)
 		}
 	}
 	if report.IntegrityProblems() != 0 {
@@ -232,15 +232,24 @@ func TestAuditFindsCatalogProblems(t *testing.T) {
 			t.Errorf("%s = %d, want %d", check, count, expected)
 		}
 	}
-	// A count alone does not say which row to look at, so every match names one.
+	// A count alone does not say which row to look at, so every match is named
+	// and none of them are dropped.
 	for _, finding := range report.Findings {
-		if finding.Count > 0 && len(finding.Samples) == 0 {
-			t.Errorf("%s matched %d rows without naming any", finding.Check, finding.Count)
+		if finding.Count != len(finding.Matches) {
+			t.Errorf("%s matched %d rows but named %d", finding.Check,
+				finding.Count, len(finding.Matches))
 		}
 		if finding.Check == "items with a broken parent link" &&
-			!strings.Contains(finding.Samples[0], "Season 2") {
+			!strings.Contains(finding.Matches[0], "Season 2") {
 			t.Errorf("broken parent link named %q, want the orphaned season %d",
-				finding.Samples[0], orphan)
+				finding.Matches[0], orphan)
+		}
+		// An unmatched episode's own title is the filename placeholder, so the
+		// show it belongs to has to come from somewhere else.
+		if finding.Check == "episodes of a matched show without a match" &&
+			!strings.Contains(finding.Matches[0], "Show S01E01") {
+			t.Errorf("unmatched episode named %q, want the show and episode number",
+				finding.Matches[0])
 		}
 	}
 	if report.IntegrityProblems() != 6 {

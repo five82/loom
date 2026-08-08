@@ -558,11 +558,8 @@ func printAuditReport(dbPath string, report store.AuditReport) {
 			section = heading
 		}
 		fmt.Printf("  %5d  %s\n", finding.Count, finding.Check)
-		for _, sample := range finding.Samples {
-			fmt.Printf("           %s\n", sample)
-		}
-		if finding.Count > len(finding.Samples) {
-			fmt.Printf("           and %d more\n", finding.Count-len(finding.Samples))
+		for _, match := range finding.Matches {
+			fmt.Printf("           %s\n", match)
 		}
 	}
 	fmt.Printf("\n%d integrity problems\n", report.IntegrityProblems())

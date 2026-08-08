@@ -127,7 +127,8 @@ artwork row pointing at a file that is gone — and the command exits non-zero
 when any of them match. Metadata checks describe what TMDB did not supply, such
 as a short film with no billed cast or an episode whose local numbering the
 provider disagrees with. Those are routine, so they are reported without failing
-the command. Each finding names up to five offending rows.
+the command. Every match is listed, because how a finding is distributed is
+usually the thing worth seeing.
 
 Run the audit once a scan has finished, because a scan in progress moves items
 through these states legitimately.

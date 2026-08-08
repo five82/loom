@@ -6,21 +6,20 @@ import (
 	"os"
 )
 
-// auditSamples bounds how many offending rows a finding names. The audit points
-// at a problem rather than enumerating it, and a check that matches hundreds of
-// rows is almost always describing one systemic cause.
-const auditSamples = 5
-
 // Finding is one audit check and what it matched. Checks that matched nothing
 // are still reported, so the output says what was looked for instead of leaving
 // silence to mean either clean or unchecked.
+//
+// Every match is named. A cap would have to guess which rows matter, and the
+// shape of a finding is usually in the rows it does not show: thirty-four
+// unmatched episodes read as one broken show until the list makes it seven.
 type Finding struct {
 	Check string `json:"check"`
 	// Integrity marks a check that must always be zero. The rest describe
 	// metadata a provider did not supply, which is a gap rather than a defect.
 	Integrity bool     `json:"integrity"`
 	Count     int      `json:"count"`
-	Samples   []string `json:"samples,omitempty"`
+	Matches   []string `json:"matches,omitempty"`
 }
 
 type AuditReport struct {
@@ -133,11 +132,14 @@ ORDER BY i.id`,
 	// title until the season fetch reaches it, which a numbering disagreement
 	// with the provider can prevent for good.
 	name: "episodes of a matched show without a match",
-	query: `SELECT i.id || ' ' || i.title FROM items i
+	// An unmatched episode still carries its filename-derived title, so naming
+	// the show is the only way the list says which one is affected.
+	query: `SELECT i.id || ' ' || show.title || ' ' ||
+    printf('S%02dE%02d', i.season_number, i.episode_number) FROM items i
 JOIN items season ON season.id = i.parent_id
 JOIN items show ON show.id = season.parent_id
 WHERE i.available = 1 AND i.kind = 'episode' AND i.tmdb_id = 0 AND show.tmdb_id <> 0
-ORDER BY i.id`,
+ORDER BY show.title, i.season_number, i.episode_number`,
 }, {
 	// Seasons and episodes fall back to the show's artwork, so only the two
 	// kinds that have to supply their own are checked.
@@ -186,14 +188,12 @@ func (s *Store) runAuditCheck(ctx context.Context, check auditCheck, integrity b
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var sample string
-		if err := rows.Scan(&sample); err != nil {
+		var match string
+		if err := rows.Scan(&match); err != nil {
 			return finding, fmt.Errorf("scan audit %s: %w", check.name, err)
 		}
 		finding.Count++
-		if len(finding.Samples) < auditSamples {
-			finding.Samples = append(finding.Samples, sample)
-		}
+		finding.Matches = append(finding.Matches, match)
 	}
 	return finding, rows.Err()
 }
@@ -227,9 +227,7 @@ ORDER BY images.id`)
 			continue
 		}
 		finding.Count++
-		if len(finding.Samples) < auditSamples {
-			finding.Samples = append(finding.Samples, path)
-		}
+		finding.Matches = append(finding.Matches, path)
 	}
 	return finding, nil
 }
