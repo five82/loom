@@ -305,21 +305,18 @@ func (s *Service) SelectImage(
 	if provider != "tmdb" || providerPath == "" {
 		return nil, ErrImageOptionNotFound
 	}
-	options, err := s.ImageOptions(ctx, itemID, kind)
-	if err != nil {
+	// The path is trusted without refetching the TMDB options list: it came
+	// from ImageOptions moments ago, revalidating costs a full TMDB round trip
+	// per tap, and a bogus path just fails the download below.
+	if _, _, err := s.imageItem(ctx, itemID, kind); err != nil {
 		return nil, err
 	}
-	for _, option := range options {
-		if option.Provider == provider && option.ProviderPath == providerPath {
-			selected, err := s.downloadProviderImage(ctx, itemID, kind, providerPath, true, true)
-			if err == nil {
-				s.logger.Info("metadata image selected", "item_id", itemID, "kind", kind,
-					"provider", provider, "provider_path", providerPath)
-			}
-			return selected, err
-		}
+	selected, err := s.downloadProviderImage(ctx, itemID, kind, providerPath, true, true)
+	if err == nil {
+		s.logger.Info("metadata image selected", "item_id", itemID, "kind", kind,
+			"provider", provider, "provider_path", providerPath)
 	}
-	return nil, ErrImageOptionNotFound
+	return selected, err
 }
 
 func (s *Service) ResetImage(ctx context.Context, itemID int64, kind string) (*store.Image, error) {

@@ -221,6 +221,60 @@ func TestMovieMetadataImageSelectionAndReset(t *testing.T) {
 	}
 }
 
+// Selection latency is dominated by TMDB round trips, so SelectImage must not
+// refetch the options list the client already has; it only downloads the image.
+func TestSelectImageDoesNotRefetchOptions(t *testing.T) {
+	imageBytes := encodedPNG(t, color.RGBA{B: 255, A: 255})
+	var optionsRequests atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/movie/10/images", func(w http.ResponseWriter, _ *http.Request) {
+		optionsRequests.Add(1)
+		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/alternate.jpg"}]}`)
+	})
+	mux.HandleFunc("/images/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(imageBytes)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	catalog, err := store.Open(filepath.Join(root, "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, SourceKey: "Movie", Kind: "movie", Title: "Movie", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, itemID, store.MetadataUpdate{TMDBID: 10, Title: "Movie"}); err != nil {
+		t.Fatal(err)
+	}
+	client := tmdb.NewWithURLs("key", "en-US", server.URL, server.URL+"/images", server.Client())
+	service := New(catalog, client, filepath.Join(root, "images"), slog.Default())
+
+	selected, err := service.SelectImage(ctx, itemID, "poster", "tmdb", "/alternate.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected.ManuallySelected || selected.ProviderPath != "/alternate.jpg" {
+		t.Fatalf("selected poster = %+v", selected)
+	}
+	if optionsRequests.Load() != 0 {
+		t.Fatalf("SelectImage fetched the options list %d times", optionsRequests.Load())
+	}
+	if _, err := service.SelectImage(ctx, itemID+1, "poster", "tmdb", "/alternate.jpg"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unknown item error = %v", err)
+	}
+}
+
 // A library can hold a season TMDB splits into its own entry, such as a sequel
 // miniseries filed under the original. That must not cost the rest of the scan
 // its metadata, because the scanner stops matching a library after one error.
