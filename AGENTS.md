@@ -61,7 +61,8 @@ The catalog contains durable playback state and manual artwork selections.
 - Verify the schema version, foreign-key integrity, playback state, and manual
   artwork selections before considering the migration complete. Record the
   counts before deploying, because the check that matters is that they are
-  unchanged afterwards. `deploy.sh` does none of this. `loom developer audit`
+  unchanged afterwards. `deploy.sh` reports whether the schema version changed
+  but does not perform the remaining verification. `loom developer audit`
   covers the schema version, foreign-key integrity, and the catalog invariants;
   run it before and after so the comparison is against a known starting point.
   Playback state and manual artwork selections it does not count, so check those

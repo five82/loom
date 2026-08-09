@@ -21,6 +21,23 @@ print_error() {
     echo -e "${RED}   $1${NC}"
 }
 
+schema_version() {
+    local output version
+    output=$("$1" developer audit --json 2>/dev/null || true)
+    version=$(printf '%s\n' "$output" | awk '
+        /"schema_version":/ {
+            gsub(/,/, "", $2)
+            print $2
+            exit
+        }
+    ')
+    if [[ ! $version =~ ^[0-9]+$ ]]; then
+        print_error "could not read the catalog schema version with $1" >&2
+        return 1
+    fi
+    printf '%s' "$version"
+}
+
 cd "$(dirname "$0")"
 
 print_step "Locating the installed loom"
@@ -34,7 +51,10 @@ fi
 # Snapshot before the new binary can touch the catalog, using the binary that
 # wrote it. VACUUM INTO reads through one transaction, so the daemon keeps
 # serving and a running scan is not disturbed.
+SCHEMA_BEFORE=""
 if [ -x "$TARGET" ]; then
+    SCHEMA_BEFORE=$(schema_version "$TARGET")
+
     print_step "Snapshotting the catalog"
     SNAPSHOT=$("$TARGET" backup)
     print_success "$SNAPSHOT"
@@ -70,8 +90,20 @@ print_step "Starting the daemon"
 print_step "Status"
 "$TARGET" status
 
+print_step "Schema"
+SCHEMA_AFTER=$(schema_version "$TARGET")
+if [ -z "$SCHEMA_BEFORE" ]; then
+    print_success "created at version $SCHEMA_AFTER"
+elif [ "$SCHEMA_BEFORE" = "$SCHEMA_AFTER" ]; then
+    print_success "$SCHEMA_BEFORE -> $SCHEMA_AFTER (unchanged)"
+else
+    print_success "$SCHEMA_BEFORE -> $SCHEMA_AFTER (changed)"
+fi
+
 echo -e "\n${GREEN}Deployed${NC}"
-echo "After a schema change, verify the migration before trusting this:"
-echo "  loom status, PRAGMA user_version, PRAGMA foreign_key_check,"
-echo "  playback state, and manual artwork selections. See AGENTS.md."
-echo "A re-probe of existing files needs a scan: loom scan"
+if [ -n "$SCHEMA_BEFORE" ] && [ "$SCHEMA_BEFORE" != "$SCHEMA_AFTER" ]; then
+    echo "The schema changed; verify the migration before trusting this:"
+    echo "  loom status, PRAGMA foreign_key_check, playback state,"
+    echo "  and manual artwork selections. See AGENTS.md."
+    echo "A re-probe of existing files needs a scan: loom scan"
+fi
