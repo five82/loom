@@ -40,7 +40,8 @@ func TestDetailsReadCastInBillingOrderAndDirectorsFromCrew(t *testing.T) {
 {"id":9,"name":"","character":"Nobody","order":1}],
 "crew":[{"id":50,"name":"A Writer","job":"Screenplay"},
 {"id":51,"name":"A Director","job":"Director"},
-{"id":52,"name":"A Producer","job":"Producer"}]}}`)
+{"id":52,"name":"A Producer","job":"Producer"},
+{"id":1,"name":"George Lucas","job":"Executive Producer"}]}}`)
 	}))
 	defer server.Close()
 
@@ -56,6 +57,10 @@ func TestDetailsReadCastInBillingOrderAndDirectorsFromCrew(t *testing.T) {
 	if len(details.Directors) != 1 || details.Directors[0].ID != 51 ||
 		details.Directors[0].Name != "A Director" {
 		t.Fatalf("details directors = %+v", details.Directors)
+	}
+	if len(details.Producers) != 2 || details.Producers[0].ID != 52 ||
+		details.Producers[1].ID != 1 {
+		t.Fatalf("details producers = %+v", details.Producers)
 	}
 }
 

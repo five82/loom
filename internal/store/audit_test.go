@@ -74,8 +74,8 @@ func TestAuditPassesOnACompleteCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SchemaVersion != 11 {
-		t.Fatalf("schema version = %d, want 11", report.SchemaVersion)
+	if report.SchemaVersion != 12 {
+		t.Fatalf("schema version = %d, want 12", report.SchemaVersion)
 	}
 	for _, finding := range report.Findings {
 		if finding.Count != 0 {
@@ -237,7 +237,7 @@ func TestAuditFindsCatalogProblems(t *testing.T) {
 		"movies without genres":                      1,
 		"episodes of a matched show without a match": 1,
 		"seasons whose numbering disagrees with TMDB": 1,
-		"titles without a poster":                     3,
+		"titles without a poster":                    3,
 	}
 	if len(counts) != len(want) {
 		t.Fatalf("audit reported %d checks, want %d", len(counts), len(want))

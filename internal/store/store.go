@@ -85,7 +85,7 @@ func (s *Store) ensureSchema() error {
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version == 11 {
+	if version == 12 {
 		return nil
 	}
 	if version != 0 {
@@ -155,7 +155,7 @@ CREATE TABLE people (
 CREATE TABLE item_credits (
     item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     person_id INTEGER NOT NULL REFERENCES people(id),
-    role TEXT NOT NULL CHECK (role IN ('actor', 'director')),
+    role TEXT NOT NULL CHECK (role IN ('actor', 'director', 'producer')),
     character TEXT NOT NULL DEFAULT '',
     ordering INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (item_id, person_id, role)
@@ -221,7 +221,7 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 11;
+PRAGMA user_version = 12;
 `
 	tx, err := s.db.Begin()
 	if err != nil {

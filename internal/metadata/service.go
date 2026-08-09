@@ -238,11 +238,11 @@ func (s *Service) applyDetails(ctx context.Context, item *store.Item, details tm
 		Overview: details.Overview, Tagline: details.Tagline, ReleaseDate: details.ReleaseDate,
 		VoteAverage: details.VoteAverage, ContentRating: details.ContentRating,
 		Status: details.Status, TotalSeasons: details.TotalSeasons,
-		Credits: storeCredits(details.Cast, nil),
+		Credits: storeCredits(details.Cast, nil, nil),
 	}
 	if item.Kind == "movie" {
 		update.Genres = storeGenres(details.Genres)
-		update.Credits = storeCredits(details.Cast, details.Directors)
+		update.Credits = storeCredits(details.Cast, details.Directors, details.Producers)
 	}
 	return s.store.UpdateMetadata(ctx, item.ID, update)
 }
@@ -671,19 +671,41 @@ func combinedEpisodeMetadata(item store.Item, episodes map[int]tmdb.Episode) (st
 	}, true
 }
 
+// TMDB person IDs are stable. Only producers whose work is useful as a search
+// association belong here; storing every producer would make credits noisy.
+var notableProducerIDs = map[int64]struct{}{
+	1: {}, // George Lucas
+}
+
 // maxCast bounds how deep a cast list Loom keeps. TMDB bills fifty or more
 // people on a big film, and the tail is uncredited extras that would pad every
 // detail screen and match name searches nobody meant.
 const maxCast = 15
 
-// storeCredits puts directors ahead of the cast, which is the order a detail
-// screen reads them in and the order the store preserves.
-func storeCredits(cast []tmdb.CastCredit, directors []tmdb.Director) []store.Credit {
-	credits := make([]store.Credit, 0, len(directors)+min(len(cast), maxCast))
+// storeCredits puts directors and the curated producer credit ahead of the
+// cast, which is the order a detail screen reads them in and the store preserves.
+func storeCredits(
+	cast []tmdb.CastCredit, directors []tmdb.Director, producers []tmdb.Producer,
+) []store.Credit {
+	credits := make([]store.Credit, 0, len(directors)+1+min(len(cast), maxCast))
+	creditedPeople := make(map[int64]struct{}, len(directors))
 	for _, director := range directors {
 		credits = append(credits, store.Credit{
 			PersonID: director.ID, Name: director.Name, Role: "director",
 		})
+		creditedPeople[director.ID] = struct{}{}
+	}
+	for _, producer := range producers {
+		if _, notable := notableProducerIDs[producer.ID]; !notable {
+			continue
+		}
+		if _, alreadyCredited := creditedPeople[producer.ID]; alreadyCredited {
+			continue
+		}
+		credits = append(credits, store.Credit{
+			PersonID: producer.ID, Name: producer.Name, Role: "producer",
+		})
+		creditedPeople[producer.ID] = struct{}{}
 	}
 	for index, member := range cast {
 		if index == maxCast {

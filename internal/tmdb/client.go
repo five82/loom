@@ -125,6 +125,14 @@ type Director struct {
 	Name string
 }
 
+// Producer is one production credit. Callers decide which producers are
+// notable enough to retain rather than putting every production credit on a
+// detail screen.
+type Producer struct {
+	ID   int64
+	Name string
+}
+
 type Details struct {
 	ID           int64
 	Title        string
@@ -149,6 +157,7 @@ type Details struct {
 	// of it rather than storing a whole crawl of bit parts.
 	Cast      []CastCredit
 	Directors []Director
+	Producers []Producer
 }
 
 func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Details, error) {
@@ -256,10 +265,15 @@ func (c *Client) Details(ctx context.Context, mediaType string, id int64) (Detai
 		})
 	}
 	for _, member := range raw.Credits.Crew {
-		if member.Job != "Director" || member.Name == "" {
+		if member.Name == "" {
 			continue
 		}
-		details.Directors = append(details.Directors, Director{ID: member.ID, Name: member.Name})
+		if member.Job == "Director" {
+			details.Directors = append(details.Directors, Director{ID: member.ID, Name: member.Name})
+		}
+		if strings.HasSuffix(member.Job, "Producer") {
+			details.Producers = append(details.Producers, Producer{ID: member.ID, Name: member.Name})
+		}
 	}
 	if mediaType == "tv" {
 		details.Status, details.TotalSeasons = raw.Status, raw.NumberOfSeasons

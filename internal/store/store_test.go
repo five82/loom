@@ -423,16 +423,28 @@ func TestSearchRanksTitleMatchesAboveCreditedPeople(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	empireID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "The Empire Strikes Back", Kind: "movie",
+		Title: "The Empire Strikes Back", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := catalog.UpdateMetadata(ctx, sicarioID, MetadataUpdate{TMDBID: 273481, Credits: []Credit{
-		{PersonID: 1, Name: "Denis Villeneuve", Role: "director"},
-		{PersonID: 2, Name: "Emily Blunt", Role: "actor", Character: "Kate Macer"},
+		{PersonID: 137427, Name: "Denis Villeneuve", Role: "director"},
+		{PersonID: 5081, Name: "Emily Blunt", Role: "actor", Character: "Kate Macer"},
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := catalog.UpdateMetadata(ctx, criminalID, MetadataUpdate{TMDBID: 830788}); err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 2, 0, nil); err != nil {
+	if err := catalog.UpdateMetadata(ctx, empireID, MetadataUpdate{TMDBID: 1891, Credits: []Credit{
+		{PersonID: 1, Name: "George Lucas", Role: "producer"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 3, 3, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -453,6 +465,14 @@ func TestSearchRanksTitleMatchesAboveCreditedPeople(t *testing.T) {
 	}
 	if fuzzy || len(results) != 1 || results[0].ID != sicarioID {
 		t.Fatalf("director search fuzzy=%v results=%+v", fuzzy, results)
+	}
+
+	results, fuzzy, err = catalog.SearchItems(ctx, "George Lucas", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fuzzy || len(results) != 1 || results[0].ID != empireID {
+		t.Fatalf("producer search fuzzy=%v results=%+v", fuzzy, results)
 	}
 
 	// A typo only falls back to fuzzy matching after strict search finds none.
@@ -684,8 +704,8 @@ func TestCurrentSchemaCreatedAndAccepted(t *testing.T) {
 	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 11 {
-		t.Fatalf("created schema version = %d, want 11", version)
+	if version != 12 {
+		t.Fatalf("created schema version = %d, want 12", version)
 	}
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)

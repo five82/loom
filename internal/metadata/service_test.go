@@ -833,7 +833,7 @@ func encodedPNG(t *testing.T, fill color.Color) []byte {
 	return output.Bytes()
 }
 
-func TestStoreCreditsLeadWithDirectorsAndCapTheCast(t *testing.T) {
+func TestStoreCreditsIncludeOnlyNotableProducersAndCapTheCast(t *testing.T) {
 	cast := make([]tmdb.CastCredit, 0, maxCast+5)
 	for index := range maxCast + 5 {
 		cast = append(cast, tmdb.CastCredit{
@@ -841,27 +841,40 @@ func TestStoreCreditsLeadWithDirectorsAndCapTheCast(t *testing.T) {
 			Character: fmt.Sprintf("Role %d", index),
 		})
 	}
-	credits := storeCredits(cast, []tmdb.Director{{ID: 1, Name: "A Director"}})
-	if len(credits) != maxCast+1 {
-		t.Fatalf("credit count = %d, want %d", len(credits), maxCast+1)
+	credits := storeCredits(
+		cast,
+		[]tmdb.Director{{ID: 2, Name: "A Director"}},
+		[]tmdb.Producer{{ID: 3, Name: "A Producer"}, {ID: 1, Name: "George Lucas"}},
+	)
+	if len(credits) != maxCast+2 {
+		t.Fatalf("credit count = %d, want %d", len(credits), maxCast+2)
 	}
 	if credits[0].Role != "director" || credits[0].Name != "A Director" {
 		t.Fatalf("directors do not lead: %+v", credits[0])
 	}
-	// The cap keeps the top of the billing, not an arbitrary slice of it.
-	if credits[1].Name != "Actor 0" || credits[maxCast].Name != fmt.Sprintf("Actor %d", maxCast-1) {
-		t.Fatalf("capped cast = %+v", credits[1:])
+	if credits[1].Role != "producer" || credits[1].Name != "George Lucas" {
+		t.Fatalf("notable producer credit = %+v", credits[1])
 	}
-	for _, credit := range credits[1:] {
+	// The cap keeps the top of the billing, not an arbitrary slice of it.
+	if credits[2].Name != "Actor 0" || credits[maxCast+1].Name != fmt.Sprintf("Actor %d", maxCast-1) {
+		t.Fatalf("capped cast = %+v", credits[2:])
+	}
+	for _, credit := range credits[2:] {
 		if credit.Role != "actor" || credit.Character == "" {
 			t.Fatalf("cast credit lost its role or character: %+v", credit)
 		}
 	}
+
+	credits = storeCredits(nil, []tmdb.Director{{ID: 1, Name: "George Lucas"}},
+		[]tmdb.Producer{{ID: 1, Name: "George Lucas"}})
+	if len(credits) != 1 || credits[0].Role != "director" {
+		t.Fatalf("director and producer duplicated: %+v", credits)
+	}
 }
 
-// TestShowCreditsOmitDirectors covers the split between the two kinds: TV
-// credits directors per episode, so a show's own crew list is not stored.
-func TestShowCreditsOmitDirectors(t *testing.T) {
+// TestShowCreditsOmitCrew covers the split between the two kinds: TV credits
+// directors per episode, and a show's own crew list is not stored.
+func TestShowCreditsOmitCrew(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	catalog, err := store.Open(filepath.Join(root, "loom.db"))
@@ -874,6 +887,7 @@ func TestShowCreditsOmitDirectors(t *testing.T) {
 		ID: 1, Title: "Title",
 		Cast:      []tmdb.CastCredit{{ID: 10, Name: "An Actor", Character: "Someone"}},
 		Directors: []tmdb.Director{{ID: 20, Name: "A Director"}},
+		Producers: []tmdb.Producer{{ID: 1, Name: "George Lucas"}},
 	}
 
 	for _, testCase := range []struct {
@@ -882,7 +896,7 @@ func TestShowCreditsOmitDirectors(t *testing.T) {
 		path        string
 		wantCredits int
 	}{
-		{kind: "movie", library: "movies", path: "/movies", wantCredits: 2},
+		{kind: "movie", library: "movies", path: "/movies", wantCredits: 3},
 		{kind: "show", library: "tv", path: "/tv", wantCredits: 1},
 	} {
 		libraryID, scanID, err := catalog.StartScan(ctx, testCase.library, testCase.path)
@@ -917,7 +931,10 @@ func TestShowCreditsOmitDirectors(t *testing.T) {
 			t.Fatalf("%s lost its cast: %+v", testCase.kind, stored.Credits)
 		}
 		if testCase.kind == "show" && stored.Credits[0].Role != "actor" {
-			t.Fatalf("show stored a director: %+v", stored.Credits)
+			t.Fatalf("show stored crew credits: %+v", stored.Credits)
+		}
+		if testCase.kind == "movie" && stored.Credits[1].Role != "producer" {
+			t.Fatalf("movie lost its notable producer: %+v", stored.Credits)
 		}
 	}
 }

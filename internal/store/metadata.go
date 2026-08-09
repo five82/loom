@@ -13,7 +13,7 @@ type Genre struct {
 }
 
 // Credit is one person's billing on an item. Only the roles a detail screen
-// shows are stored: the billed cast and, for movies, the director.
+// shows are stored: the billed cast, movie directors, and curated producers.
 type Credit struct {
 	PersonID  int64  `json:"person_id"`
 	Name      string `json:"name"`
