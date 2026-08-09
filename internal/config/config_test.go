@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -11,7 +12,8 @@ func TestLoadExplicitConfig(t *testing.T) {
 	t.Setenv("TMDB_API_KEY", "environment-key")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	data := `[api]
+	data := `name = " Loom Test "
+[api]
 bind = "127.0.0.1:9000"
 [paths]
 state_dir = "state"
@@ -35,6 +37,9 @@ language = "en-US"
 	}
 	if cfg.SourcePath != path {
 		t.Fatalf("SourcePath = %q, want %q", cfg.SourcePath, path)
+	}
+	if cfg.Name != "Loom Test" {
+		t.Fatalf("Name = %q, want trimmed configured name", cfg.Name)
 	}
 	if cfg.TMDB.APIKey != "environment-key" {
 		t.Fatalf("API key = %q, want environment override", cfg.TMDB.APIKey)
@@ -64,8 +69,23 @@ func TestLoadRejectsUnknownField(t *testing.T) {
 
 func TestDefaultAPIDoesNotConflictWithJellyfin(t *testing.T) {
 	cfg := defaultConfig()
+	if cfg.Name != "Loom" {
+		t.Fatalf("default name = %q, want Loom", cfg.Name)
+	}
 	if cfg.API.Bind != "0.0.0.0:8097" {
 		t.Fatalf("default API bind = %q, want Loom port 8097", cfg.API.Bind)
+	}
+}
+
+func TestNameMustFitDNSServiceLabel(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Name = " "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted an empty name")
+	}
+	cfg.Name = strings.Repeat("a", 64)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted a name longer than 63 bytes")
 	}
 }
 

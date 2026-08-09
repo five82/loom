@@ -89,10 +89,21 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		_ = unixListener.Close()
 		return fmt.Errorf("listen on LAN API %s: %w", cfg.API.Bind, err)
 	}
+	apiAddresses := tcpListenAddresses(tcpListener, cfg.API.Bind)
 	api := httpapi.New(catalog, scans, metadataService, shutdownRequest,
 		httpapi.ListenAddresses{
-			API: tcpListenAddresses(tcpListener, cfg.API.Bind), Control: unixListener.Addr().String(),
+			API: apiAddresses, Control: unixListener.Addr().String(),
 		})
+
+	discovery, discoveryName, err := startDiscovery(cfg.Name, apiAddresses)
+	if err != nil {
+		// mDNS is a convenience; Loom must remain usable by an explicit address
+		// on hosts or networks where multicast is unavailable.
+		logger.Warn("LAN discovery unavailable", "error", err)
+	} else {
+		defer func() { _ = discovery.Shutdown() }()
+		logger.Info("LAN discovery started", "service", discoveryName)
+	}
 
 	localServer := &http.Server{
 		Handler: api.LocalHandler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,

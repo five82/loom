@@ -34,6 +34,8 @@ loom config validate
 The default configuration is:
 
 ```toml
+name = "Loom"
+
 [api]
 bind = "0.0.0.0:8097"
 
@@ -54,9 +56,11 @@ api_key = ""
 language = "en-US"
 ```
 
-Use `--config /path/to/config.toml` to select another file. `TMDB_API_KEY`
-overrides the configured key. When the key is empty, media scanning and direct
-play remain available but TMDB matching is disabled.
+Use `--config /path/to/config.toml` to select another file. `name` is the
+instance name advertised to Takeup over local-network discovery; give each Loom
+server a distinct name such as `Loom` or `Loom Test`. `TMDB_API_KEY` overrides
+the configured key. When the key is empty, media scanning and direct play remain
+available but TMDB matching is disabled.
 
 Runtime data is kept under `paths.state_dir`:
 

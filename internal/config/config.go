@@ -12,6 +12,7 @@ import (
 // Config contains Loom's operator-controlled settings.
 type Config struct {
 	SourcePath string `toml:"-"`
+	Name       string `toml:"name"`
 
 	API     APIConfig     `toml:"api"`
 	Paths   PathsConfig   `toml:"paths"`
@@ -49,7 +50,8 @@ func defaultConfig() *Config {
 		home = "/"
 	}
 	return &Config{
-		API: APIConfig{Bind: "0.0.0.0:8097"},
+		Name: "Loom",
+		API:  APIConfig{Bind: "0.0.0.0:8097"},
 		Paths: PathsConfig{
 			StateDir: filepath.Join(home, ".local", "state", "loom"),
 		},
@@ -65,6 +67,13 @@ func defaultConfig() *Config {
 
 // Validate checks configuration without touching library contents.
 func (c *Config) Validate() error {
+	name := strings.TrimSpace(c.Name)
+	if name == "" {
+		return fmt.Errorf("name must not be empty")
+	}
+	if len([]byte(name)) > 63 {
+		return fmt.Errorf("name must be at most 63 bytes")
+	}
 	if strings.TrimSpace(c.API.Bind) == "" {
 		return fmt.Errorf("api.bind must not be empty")
 	}

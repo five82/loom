@@ -26,6 +26,7 @@ func Load(explicitPath string) (*Config, error) {
 		}
 	}
 	cfg.SourcePath = sourcePath
+	cfg.Name = strings.TrimSpace(cfg.Name)
 
 	if apiKey := os.Getenv("TMDB_API_KEY"); apiKey != "" {
 		cfg.TMDB.APIKey = apiKey
@@ -146,7 +147,9 @@ func WriteSample(path string) (string, error) {
 	return path, nil
 }
 
-const sampleConfig = `[api]
+const sampleConfig = `name = "Loom"
+
+[api]
 bind = "0.0.0.0:8097"
 
 [paths]
