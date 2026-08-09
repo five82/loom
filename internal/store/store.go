@@ -983,7 +983,8 @@ func (s *Store) ListItems(ctx context.Context, opts ListOptions) ([]Item, error)
 	// Listings carry playback state so a client browsing a season can mark what
 	// it has already watched. Without it the only way to draw those markers is
 	// one item request per episode. Items with no playback row keep an absent
-	// progress field rather than a zeroed one.
+	// progress field rather than a zeroed one. The sort key skips one leading
+	// English article while leaving the title returned to clients untouched.
 	query := `SELECT ` + itemColumns + `,
     COALESCE(p.position_ms, 0), COALESCE(p.duration_ms, 0), COALESCE(p.played, 0),
     COALESCE(p.updated_at, '')
@@ -991,6 +992,12 @@ FROM items i JOIN libraries l ON l.id = i.library_id
 LEFT JOIN playback_state p ON p.item_id = i.id
 WHERE ` + strings.Join(clauses, " AND ") + `
 ORDER BY CASE i.kind WHEN 'season' THEN i.season_number WHEN 'episode' THEN i.episode_number ELSE 0 END,
+    CASE
+        WHEN substr(i.title, 1, 4) = 'the ' COLLATE NOCASE THEN substr(i.title, 5)
+        WHEN substr(i.title, 1, 3) = 'an ' COLLATE NOCASE THEN substr(i.title, 4)
+        WHEN substr(i.title, 1, 2) = 'a ' COLLATE NOCASE THEN substr(i.title, 3)
+        ELSE i.title
+    END COLLATE NOCASE,
     i.title COLLATE NOCASE, i.id
 LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, query, args...)

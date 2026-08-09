@@ -100,6 +100,62 @@ func TestCatalogAndProgress(t *testing.T) {
 	}
 }
 
+func TestListItemsSortsPastLeadingArticles(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	titles := []string{
+		"The Empire Strikes Back",
+		"A Clockwork Orange",
+		"An Education",
+		"Arrival",
+		"Theatre of Blood",
+		"The",
+		"the Thing",
+		"Thing",
+	}
+	for _, title := range titles {
+		if _, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, SourceKey: title, Kind: "movie", Title: title, ScanID: scanID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, len(titles), len(titles), 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := catalog.ListItems(ctx, ListOptions{LibraryKind: "movies", TopLevel: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, len(items))
+	for index := range items {
+		got[index] = items[index].Title
+	}
+	want := []string{
+		"Arrival",
+		"A Clockwork Orange",
+		"An Education",
+		"The Empire Strikes Back",
+		"The",
+		"Theatre of Blood",
+		"the Thing",
+		"Thing",
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("title order = %v, want %v", got, want)
+	}
+}
+
 func TestMovieGenres(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
