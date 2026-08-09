@@ -121,12 +121,30 @@ To ship the working tree to the running server:
 ./deploy.sh
 ```
 
-This snapshots the catalog, builds a static binary, stops the daemon, installs
-over the `loom` on `PATH` while keeping the previous binary beside it, and
-starts again. The daemon has to be down before the new binary lands because a
-schema change migrates on startup. The script does not test what it ships, so
-run `./check-ci.sh` first, and after a schema change verify the migration by
-hand before trusting the result.
+This builds a static binary, audits and stops the daemon, takes an exact catalog
+snapshot, installs over the `loom` on `PATH` while keeping the previous binary
+beside it, runs any pending schema migrations, verifies catalog integrity and
+preserved-state counts, and starts again. The script does not test what it
+ships, so run `./check-ci.sh` first. Deploy the same commit to the test instance
+before production.
+
+Schema upgrades are explicit and must run while Loom is stopped:
+
+```bash
+loom stop
+loom migrate
+loom start
+```
+
+`loom migrate` creates a missing database at the current schema, does nothing
+when the schema is already current, and otherwise applies each pending migration
+in its own transaction. Normal daemon startup refuses a database with pending
+migrations. Migrations are retained so the test and production databases, as
+well as older backups, can be upgraded later. `deploy.sh` performs this sequence
+and should normally be used instead of invoking it by hand. Keep the test
+catalog between deployments, or periodically replace it with a production
+snapshot, so schema testing does not require re-fetching all TMDB metadata. Use
+`loom developer reset` only when deliberately testing a clean bootstrap.
 
 To snapshot the catalog before a risky change:
 
@@ -137,10 +155,11 @@ loom backup [path]
 This writes a consistent copy of `loom.db` with SQLite's `VACUUM INTO` and
 prints its path, so the daemon does not have to be stopped and a running scan is
 not disturbed. The snapshot is created with mode `0600` and an existing file is
-never overwritten. Without a path it lands in a timestamped file under `/tmp`,
-which is fine for a pre-migration safety copy but is not durable backup storage.
-Copying `loom.db` by hand is not equivalent: WAL mode keeps recent commits in a
-separate `loom.db-wal` file.
+never overwritten. Without a path it lands in a timestamped file under
+`paths.state_dir/backups`; pass a path to store it elsewhere. Copying `loom.db`
+by hand is not equivalent: WAL mode keeps recent commits in a separate
+`loom.db-wal` file. `deploy.sh` stops Loom before taking its snapshot so the
+snapshot is an exact rollback point.
 
 To check the catalog for problems:
 
@@ -150,8 +169,9 @@ loom developer audit --json
 ```
 
 The audit reads the database directly and writes nothing, so it runs whether or
-not the daemon is up, which is what makes it useful after a migration that
-prevents startup. It reports two kinds of finding. Integrity checks describe
+not the daemon is up. It reports the schema version plus playback-state and
+manual-artwork counts used to validate migrations, followed by two kinds of
+finding. Integrity checks describe
 states that should never occur — foreign key violations, a playable item with no
 media file, a probe that failed or reported no duration, a season or episode
 whose parent is wrong, a director credited on something that is not a movie, an

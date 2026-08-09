@@ -51,7 +51,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(
 		newStartCommand(), newStopCommand(), newRestartCommand(), newStatusCommand(),
 		newScanCommand(), newUnmatchedCommand(), newSearchCommand(), newMatchCommand(),
-		newLogsCommand(), newBackupCommand(), newConfigCommand(), newServiceCommand(),
+		newLogsCommand(), newBackupCommand(), newMigrateCommand(), newConfigCommand(), newServiceCommand(),
 		newDeveloperCommand(), newDaemonCommand(),
 	)
 	return root
@@ -455,24 +455,66 @@ The snapshot is taken with SQLite's VACUUM INTO, so it is safe to run while the
 daemon is serving and Loom does not need to be stopped. The snapshot is created
 with mode 0600 and an existing file is never overwritten.
 
-Without a path the snapshot is written to a timestamped file in the system
-temporary directory, which is suitable for a pre-migration safety copy but is
-not durable backup storage.`,
+Without a path the snapshot is written to the backups directory under
+paths.state_dir.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
 			}
-			destination := filepath.Join(os.TempDir(),
-				"loom-"+time.Now().UTC().Format("20060102T150405Z")+".db")
+			destination := ""
 			if len(args) == 1 {
 				destination = args[0]
+			} else {
+				backupDir := filepath.Join(cfg.Paths.StateDir, "backups")
+				if err := os.MkdirAll(backupDir, 0o700); err != nil {
+					return fmt.Errorf("create backup directory: %w", err)
+				}
+				destination = filepath.Join(backupDir,
+					"loom-"+time.Now().UTC().Format("20060102T150405Z")+".db")
 			}
 			if err := store.Backup(command.Context(), cfg.DBPath(), destination); err != nil {
 				return err
 			}
 			fmt.Println(destination)
+			return nil
+		},
+	}
+}
+
+func newMigrateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Upgrade the catalog database schema",
+		Long: `Upgrade the catalog database to the schema required by this Loom binary.
+
+The daemon must be stopped. Each pending migration runs once in its own
+transaction, and running the command when the schema is current is a no-op.`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			if daemonctl.IsRunning(cfg.LockPath(), cfg.SocketPath()) {
+				return errors.New("stop Loom before migrating the catalog")
+			}
+			if err := cfg.EnsureStateDir(); err != nil {
+				return err
+			}
+			result, err := store.Migrate(command.Context(), cfg.DBPath())
+			if err != nil {
+				return err
+			}
+			switch {
+			case result.Created:
+				fmt.Printf("Created catalog schema version %d\n", result.To)
+			case result.From == result.To:
+				fmt.Printf("Catalog schema already at version %d\n", result.To)
+			default:
+				fmt.Printf("Migrated catalog schema %d -> %d\n", result.From, result.To)
+			}
 			return nil
 		},
 	}
@@ -686,6 +728,8 @@ scan has finished.`,
 
 func printAuditReport(dbPath string, report store.AuditReport) {
 	fmt.Printf("Catalog: %s (schema version %d)\n", dbPath, report.SchemaVersion)
+	fmt.Printf("Preserved state: %d playback rows, %d manual artwork selections\n",
+		report.PlaybackStateRows, report.ManualArtworkSelections)
 	section := ""
 	for _, finding := range report.Findings {
 		heading := "Metadata"

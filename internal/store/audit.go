@@ -23,8 +23,10 @@ type Finding struct {
 }
 
 type AuditReport struct {
-	SchemaVersion int       `json:"schema_version"`
-	Findings      []Finding `json:"findings"`
+	SchemaVersion           int       `json:"schema_version"`
+	PlaybackStateRows       int       `json:"playback_state_rows"`
+	ManualArtworkSelections int       `json:"manual_artwork_selections"`
+	Findings                []Finding `json:"findings"`
 }
 
 // IntegrityProblems totals the rows matched by integrity checks.
@@ -176,6 +178,13 @@ func (s *Store) Audit(ctx context.Context) (AuditReport, error) {
 	var report AuditReport
 	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&report.SchemaVersion); err != nil {
 		return report, fmt.Errorf("read schema version: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `
+SELECT
+    (SELECT COUNT(*) FROM playback_state),
+    (SELECT COUNT(*) FROM images WHERE manually_selected = 1)`).Scan(
+		&report.PlaybackStateRows, &report.ManualArtworkSelections); err != nil {
+		return report, fmt.Errorf("count preserved state: %w", err)
 	}
 	for _, check := range integrityChecks {
 		finding, err := s.runAuditCheck(ctx, check, true)

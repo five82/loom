@@ -26,23 +26,9 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create database directory: %w", err)
-	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openDatabase(path)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	for _, pragma := range []string{
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA busy_timeout = 5000",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("configure sqlite: %w", err)
-		}
+		return nil, err
 	}
 	store := &Store{db: db}
 	if err := store.ensureSchema(); err != nil {
@@ -72,25 +58,35 @@ func Backup(ctx context.Context, source, destination string) error {
 		return fmt.Errorf("back up catalog to %q: %w", destination, err)
 	}
 	// VACUUM INTO creates the snapshot under the process umask, which normally
-	// leaves it world-readable. Backups routinely land in a shared directory
-	// such as /tmp, so tighten the mode before returning.
+	// leaves it world-readable. Catalog snapshots contain personal state, so
+	// tighten the mode before returning regardless of their destination.
 	if err := os.Chmod(destination, 0o600); err != nil {
 		return fmt.Errorf("restrict backup permissions: %w", err)
 	}
 	return nil
 }
 
+const currentSchemaVersion = 12
+
 func (s *Store) ensureSchema() error {
-	var version int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
+	version, err := schemaVersion(s.db)
+	if err != nil {
+		return err
 	}
-	if version == 12 {
+	if version == currentSchemaVersion {
 		return nil
 	}
-	if version != 0 {
-		return fmt.Errorf("database schema version %d is unsupported; run loom developer reset", version)
+	if version == 0 {
+		return createSchema(s.db)
 	}
+	if migrationPathExists(version) {
+		return fmt.Errorf("database schema version %d needs migration to version %d; stop Loom and run loom migrate",
+			version, currentSchemaVersion)
+	}
+	return fmt.Errorf("database schema version %d cannot be migrated by this Loom binary", version)
+}
+
+func createSchema(db *sql.DB) error {
 	const schema = `
 CREATE TABLE libraries (
     id INTEGER PRIMARY KEY,
@@ -221,15 +217,17 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 12;
 `
-	tx, err := s.db.Begin()
+	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin database schema creation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(schema); err != nil {
 		return fmt.Errorf("create database schema: %w", err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", currentSchemaVersion)); err != nil {
+		return fmt.Errorf("record schema version %d: %w", currentSchemaVersion, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit database schema: %w", err)

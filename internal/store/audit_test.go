@@ -62,11 +62,14 @@ func TestAuditPassesOnACompleteCatalog(t *testing.T) {
 	if _, err := catalog.UpsertImage(ctx, Image{
 		ItemID: itemID, Kind: "poster", Path: poster, SourceURL: "https://example/poster.jpg",
 		Provider: "tmdb", ProviderPath: "/poster.jpg", Tag: "poster-tag",
-		ContentType: "image/jpeg", Width: 200, Height: 300, UpdatedAt: now(),
+		ContentType: "image/jpeg", Width: 200, Height: 300, ManuallySelected: true, UpdatedAt: now(),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := catalog.FinishScan(ctx, libraryID, scanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetPlayed(ctx, itemID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,6 +79,10 @@ func TestAuditPassesOnACompleteCatalog(t *testing.T) {
 	}
 	if report.SchemaVersion != 12 {
 		t.Fatalf("schema version = %d, want 12", report.SchemaVersion)
+	}
+	if report.PlaybackStateRows != 1 || report.ManualArtworkSelections != 1 {
+		t.Fatalf("preserved state = %d playback rows, %d manual artwork selections",
+			report.PlaybackStateRows, report.ManualArtworkSelections)
 	}
 	for _, finding := range report.Findings {
 		if finding.Count != 0 {
@@ -223,21 +230,21 @@ func TestAuditFindsCatalogProblems(t *testing.T) {
 	}
 	counts := auditCounts(t, report)
 	want := map[string]int{
-		"foreign key violations":                     0,
-		"items without a media file":                 1,
-		"media probe failures":                       1,
-		"media without a duration":                   1,
-		"items with a broken parent link":            1,
-		"director credits outside movies":            1,
-		"artwork files missing from disk":            1,
-		"items awaiting a metadata match":            1,
-		"matches without loaded details":             1,
-		"titles without a cast":                      1,
-		"movies without a director":                  1,
-		"movies without genres":                      1,
-		"episodes of a matched show without a match": 1,
+		"foreign key violations":                      0,
+		"items without a media file":                  1,
+		"media probe failures":                        1,
+		"media without a duration":                    1,
+		"items with a broken parent link":             1,
+		"director credits outside movies":             1,
+		"artwork files missing from disk":             1,
+		"items awaiting a metadata match":             1,
+		"matches without loaded details":              1,
+		"titles without a cast":                       1,
+		"movies without a director":                   1,
+		"movies without genres":                       1,
+		"episodes of a matched show without a match":  1,
 		"seasons whose numbering disagrees with TMDB": 1,
-		"titles without a poster":                    3,
+		"titles without a poster":                     3,
 	}
 	if len(counts) != len(want) {
 		t.Fatalf("audit reported %d checks, want %d", len(counts), len(want))

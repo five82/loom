@@ -739,7 +739,7 @@ func TestUnsupportedSchemaRejected(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "loom developer reset") {
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "cannot be migrated") {
 		t.Fatalf("Open with unsupported schema error = %v", err)
 	}
 }
