@@ -16,11 +16,19 @@ const (
 	unitMarker = "# Installed by `loom service install`."
 )
 
-// UnitPath returns the path used for Loom's per-user systemd unit.
+// UnitPath returns the path used for Loom's per-user systemd unit. systemd
+// resolves user units under $XDG_CONFIG_HOME/systemd/user, so honor the
+// variable explicitly: os.UserConfigDir does the same on Linux, but on macOS
+// (where the tests run) it ignores XDG_CONFIG_HOME and would send the tests'
+// fake units into the real ~/Library config directory.
 func UnitPath() (string, error) {
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user config directory: %w", err)
+	configDir := os.Getenv("XDG_CONFIG_HOME")
+	if configDir == "" {
+		var err error
+		configDir, err = os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user config directory: %w", err)
+		}
 	}
 	return filepath.Join(configDir, "systemd", "user", unitName), nil
 }
