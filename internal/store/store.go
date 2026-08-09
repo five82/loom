@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,8 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -721,10 +723,51 @@ type SearchResult struct {
 	SeasonTitle string `json:"season_title,omitempty"`
 }
 
-// SearchItems matches titles and credited people. A person match sorts below
-// every title match, so searching an actor who shares a word with a title still
-// puts the title first, and a result that only matched a cast member never
-// buries the film the query named.
+// Registered once for every future connection; SearchItems depends on it.
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction("word_prefix_match", 2,
+		func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			text, _ := args[0].(string)
+			query, _ := args[1].(string)
+			if wordPrefixMatch(text, query) {
+				return int64(1), nil
+			}
+			return int64(0), nil
+		})
+}
+
+// wordPrefixMatch reports whether every word of query starts a word of text.
+// Words are runs of letters and digits, so punctuation both splits and is
+// ignored: "hanks" finds "Tom Hanks" but not "Thanksgiving", and "spider man"
+// finds "Spider-Man". A query with no words matches nothing.
+func wordPrefixMatch(text, query string) bool {
+	isBoundary := func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }
+	queryWords := strings.FieldsFunc(strings.ToLower(query), isBoundary)
+	if len(queryWords) == 0 {
+		return false
+	}
+	textWords := strings.FieldsFunc(strings.ToLower(text), isBoundary)
+	for _, queryWord := range queryWords {
+		matched := false
+		for _, textWord := range textWords {
+			if strings.HasPrefix(textWord, queryWord) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// SearchItems matches titles and credited people by word prefix (see
+// wordPrefixMatch), so "hanks" finds Tom Hanks films without dredging up
+// Thanksgiving. A person match sorts below every title match, so searching an
+// actor who shares a word with a title still puts the title first, and a
+// result that only matched a cast member never buries the film the query
+// named.
 func (s *Store) SearchItems(ctx context.Context, searchQuery string, limit, offset int) ([]SearchResult, error) {
 	searchQuery = strings.TrimSpace(searchQuery)
 	if searchQuery == "" {
@@ -742,13 +785,13 @@ FROM items i
 LEFT JOIN items season ON i.kind = 'episode' AND season.id = i.parent_id
 LEFT JOIN items series ON series.id = season.parent_id
 WHERE i.available = 1 AND i.kind IN ('movie', 'show', 'episode')
-    AND (instr(lower(i.title), lower(?)) > 0
+    AND (word_prefix_match(i.title, ?)
         OR i.id IN (SELECT c.item_id FROM item_credits c JOIN people p ON p.id = c.person_id
-            WHERE instr(lower(p.name), lower(?)) > 0))
+            WHERE word_prefix_match(p.name, ?)))
 ORDER BY CASE
         WHEN i.title = ? COLLATE NOCASE THEN 0
         WHEN substr(i.title, 1, length(?)) = ? COLLATE NOCASE THEN 1
-        WHEN instr(lower(i.title), lower(?)) > 0 THEN 2
+        WHEN word_prefix_match(i.title, ?) THEN 2
         ELSE 3
     END,
     i.title COLLATE NOCASE,

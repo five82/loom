@@ -469,6 +469,81 @@ func TestSearchRanksTitleMatchesAboveCreditedPeople(t *testing.T) {
 	}
 }
 
+func TestWordPrefixMatch(t *testing.T) {
+	cases := []struct {
+		text, query string
+		want        bool
+	}{
+		{"Tom Hanks", "hanks", true},
+		{"Tom Hanks", "tom h", true},
+		{"Thanksgiving", "hanks", false},
+		{"Thanksgiving", "thanks", true},
+		{"Toy Story", "story toy", true},
+		{"Toy Story", "toy soldiers", false},
+		{"Spider-Man", "spider man", true},
+		// Boundary runes only split; they never match a word themselves.
+		{"Pilot", "%", false},
+		{"Pilot", "", false},
+	}
+	for _, c := range cases {
+		if got := wordPrefixMatch(c.text, c.query); got != c.want {
+			t.Errorf("wordPrefixMatch(%q, %q) = %v, want %v", c.text, c.query, got, c.want)
+		}
+	}
+}
+
+func TestSearchMatchesWordStartsOnly(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	thanksgivingID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Thanksgiving", Kind: "movie",
+		Title: "Thanksgiving", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bigID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Big", Kind: "movie", Title: "Big", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, bigID, MetadataUpdate{TMDBID: 2280, Credits: []Credit{
+		{PersonID: 31, Name: "Tom Hanks", Role: "actor", Character: "Josh Baskin"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 2, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// "hanks" only starts a word in the actor's name, not in "Thanksgiving".
+	results, err := catalog.SearchItems(ctx, "hanks", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != bigID {
+		t.Fatalf("cast search matched mid-word titles: %+v", results)
+	}
+
+	results, err = catalog.SearchItems(ctx, "thanks", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].ID != thanksgivingID {
+		t.Fatalf("title prefix search = %+v", results)
+	}
+}
+
 func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
