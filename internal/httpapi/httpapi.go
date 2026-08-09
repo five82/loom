@@ -19,18 +19,26 @@ import (
 	"github.com/five82/loom/internal/store"
 )
 
-type API struct {
-	store    *store.Store
-	scans    *library.Manager
-	metadata *metadata.Service
-	shutdown chan<- struct{}
-	public   *http.ServeMux
+type ListenAddresses struct {
+	API     []string `json:"api"`
+	Control string   `json:"control"`
 }
 
-func New(catalog *store.Store, scans *library.Manager, metadataService *metadata.Service, shutdown chan<- struct{}) *API {
+type API struct {
+	store     *store.Store
+	scans     *library.Manager
+	metadata  *metadata.Service
+	shutdown  chan<- struct{}
+	listeners ListenAddresses
+	public    *http.ServeMux
+}
+
+func New(catalog *store.Store, scans *library.Manager, metadataService *metadata.Service,
+	shutdown chan<- struct{}, listeners ListenAddresses,
+) *API {
 	api := &API{
 		store: catalog, scans: scans, metadata: metadataService,
-		shutdown: shutdown, public: http.NewServeMux(),
+		shutdown: shutdown, listeners: listeners, public: http.NewServeMux(),
 	}
 	api.public.HandleFunc("GET /api/v1/health", api.health)
 	api.public.HandleFunc("GET /api/v1/libraries", api.libraries)
@@ -606,7 +614,7 @@ func (a *API) status(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"running": true, "pid": os.Getpid(), "scan": a.scans.Status(),
-		"catalog": stats, "last_scans": lastScans,
+		"listeners": a.listeners, "catalog": stats, "last_scans": lastScans,
 	})
 }
 

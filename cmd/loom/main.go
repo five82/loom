@@ -184,9 +184,13 @@ func newRestartCommand() *cobra.Command {
 }
 
 type daemonStatus struct {
-	Running bool `json:"running"`
-	PID     int  `json:"pid"`
-	Scan    struct {
+	Running   bool `json:"running"`
+	PID       int  `json:"pid"`
+	Listeners struct {
+		API     []string `json:"api"`
+		Control string   `json:"control"`
+	} `json:"listeners"`
+	Scan struct {
 		Running     bool   `json:"running"`
 		Library     string `json:"library"`
 		StartedAt   string `json:"started_at"`
@@ -240,6 +244,11 @@ func newStatusCommand() *cobra.Command {
 				return printJSON(status)
 			}
 			fmt.Printf("Daemon running (PID %d)\n", status.PID)
+			fmt.Println("Listeners:")
+			for _, address := range status.Listeners.API {
+				fmt.Printf("  API: %s\n", address)
+			}
+			fmt.Printf("  Control: %s\n", status.Listeners.Control)
 			if status.Scan.Running {
 				fmt.Printf("Scan: running (%s)\n", status.Scan.Library)
 			} else if status.Scan.LastError != "" {

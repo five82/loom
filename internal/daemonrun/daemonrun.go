@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 
@@ -71,7 +72,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		cfg.Library.MoviesDir, cfg.Library.ShortsDir, cfg.Library.TVDir, logger)
 	scans := library.NewManager(scanner, interval, logger)
 	shutdownRequest := make(chan struct{}, 1)
-	api := httpapi.New(catalog, scans, metadataService, shutdownRequest)
 
 	_ = os.Remove(cfg.SocketPath())
 	unixListener, err := net.Listen("unix", cfg.SocketPath())
@@ -89,6 +89,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		_ = unixListener.Close()
 		return fmt.Errorf("listen on LAN API %s: %w", cfg.API.Bind, err)
 	}
+	api := httpapi.New(catalog, scans, metadataService, shutdownRequest,
+		httpapi.ListenAddresses{
+			API: tcpListenAddresses(tcpListener, cfg.API.Bind), Control: unixListener.Addr().String(),
+		})
 
 	localServer := &http.Server{
 		Handler: api.LocalHandler(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
@@ -139,6 +143,48 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	logger.Info("daemon stopped")
 	return runErr
+}
+
+func tcpListenAddresses(listener net.Listener, configuredBind string) []string {
+	bound := listener.Addr().String()
+	interfaceAddresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return []string{bound}
+	}
+	return expandTCPListenAddress(bound, configuredBind, interfaceAddresses)
+}
+
+func expandTCPListenAddress(bound, configuredBind string, interfaceAddresses []net.Addr) []string {
+	configuredHost, _, err := net.SplitHostPort(configuredBind)
+	if err != nil {
+		return []string{bound}
+	}
+	configuredIP := net.ParseIP(configuredHost)
+	if configuredIP == nil || !configuredIP.IsUnspecified() {
+		return []string{bound}
+	}
+	_, port, err := net.SplitHostPort(bound)
+	if err != nil {
+		return []string{bound}
+	}
+	seen := make(map[string]bool)
+	var addresses []string
+	for _, interfaceAddress := range interfaceAddresses {
+		ip, _, err := net.ParseCIDR(interfaceAddress.String())
+		if err != nil || (configuredIP.To4() != nil) != (ip.To4() != nil) {
+			continue
+		}
+		address := net.JoinHostPort(ip.String(), port)
+		if !seen[address] {
+			seen[address] = true
+			addresses = append(addresses, address)
+		}
+	}
+	if len(addresses) == 0 {
+		return []string{bound}
+	}
+	sort.Strings(addresses)
+	return addresses
 }
 
 type multiHandler struct {
