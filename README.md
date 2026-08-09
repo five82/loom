@@ -374,10 +374,13 @@ including an item count. Short films are browsed as their own top-level library
 rather than by genre, so they are excluded from these counts. Items include
 their genres and can be filtered by TMDB genre ID.
 
-Search matches available movie, show, and episode titles case-insensitively.
-Exact and prefix matches are returned before other substring matches. Results
-support `limit` and `offset`; episode results include `series_title` and
-`season_title` for display outside their hierarchy.
+Search matches available movie, show, and episode titles and credited people
+case-insensitively at word starts. Exact and prefix title matches rank first. If
+there are no strict matches, words of at least four characters tolerate one
+insertion, deletion, substitution, or adjacent transposition; the response's
+`fuzzy` field reports that fallback. Results support `limit` and `offset`;
+episode results include `series_title` and `season_title` for display outside
+their hierarchy.
 
 Items expose poster, backdrop, logo, and thumb image IDs with content tags.
 Clients should include the tag query parameter when fetching an image; tagged

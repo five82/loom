@@ -631,7 +631,7 @@ type Item struct {
 	AddedAt    string     `json:"added_at"`
 	UpdatedAt  string     `json:"updated_at"`
 	Media      *MediaFile `json:"media,omitempty"`
-	Progress  *Progress  `json:"progress,omitempty"`
+	Progress   *Progress  `json:"progress,omitempty"`
 	// EpisodeCount and UnwatchedCount roll episode playback state up to the show
 	// and season rows that a grid actually draws, so a client can badge a show
 	// with what is left to watch without walking down to every episode. Both stay
@@ -723,17 +723,27 @@ type SearchResult struct {
 	SeasonTitle string `json:"season_title,omitempty"`
 }
 
-// Registered once for every future connection; SearchItems depends on it.
+// Registered once for every future connection; SearchItems depends on them.
 func init() {
-	sqlite.MustRegisterDeterministicScalarFunction("word_prefix_match", 2,
+	registerSearchMatcher("word_prefix_match", wordPrefixMatch)
+	registerSearchMatcher("fuzzy_word_prefix_match", fuzzyWordPrefixMatch)
+}
+
+func registerSearchMatcher(name string, match func(string, string) bool) {
+	sqlite.MustRegisterDeterministicScalarFunction(name, 2,
 		func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
 			text, _ := args[0].(string)
 			query, _ := args[1].(string)
-			if wordPrefixMatch(text, query) {
+			if match(text, query) {
 				return int64(1), nil
 			}
 			return int64(0), nil
 		})
+}
+
+func searchWords(text string) []string {
+	isBoundary := func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }
+	return strings.FieldsFunc(strings.ToLower(text), isBoundary)
 }
 
 // wordPrefixMatch reports whether every word of query starts a word of text.
@@ -741,12 +751,11 @@ func init() {
 // ignored: "hanks" finds "Tom Hanks" but not "Thanksgiving", and "spider man"
 // finds "Spider-Man". A query with no words matches nothing.
 func wordPrefixMatch(text, query string) bool {
-	isBoundary := func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }
-	queryWords := strings.FieldsFunc(strings.ToLower(query), isBoundary)
+	queryWords := searchWords(query)
 	if len(queryWords) == 0 {
 		return false
 	}
-	textWords := strings.FieldsFunc(strings.ToLower(text), isBoundary)
+	textWords := searchWords(text)
 	for _, queryWord := range queryWords {
 		matched := false
 		for _, textWord := range textWords {
@@ -762,16 +771,105 @@ func wordPrefixMatch(text, query string) bool {
 	return true
 }
 
+// fuzzyWordPrefixMatch gives each query word of four or more characters one
+// edit of tolerance against a word prefix. Short words stay exact because one
+// edit among only a few letters produces noisy matches. Strict prefixes still
+// match so a multi-word query can contain both correct and mistyped words.
+func fuzzyWordPrefixMatch(text, query string) bool {
+	queryWords := searchWords(query)
+	if len(queryWords) == 0 {
+		return false
+	}
+	textWords := searchWords(text)
+	for _, queryWord := range queryWords {
+		matched := false
+		for _, textWord := range textWords {
+			if strings.HasPrefix(textWord, queryWord) || fuzzyPrefixMatch(textWord, queryWord) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func fuzzyPrefixMatch(textWord, queryWord string) bool {
+	queryRunes := []rune(queryWord)
+	if len(queryRunes) < 4 {
+		return false
+	}
+	textRunes := []rune(textWord)
+	minimum := len(queryRunes) - 1
+	maximum := min(len(textRunes), len(queryRunes)+1)
+	for prefixLength := minimum; prefixLength <= maximum; prefixLength++ {
+		if withinOneEdit(queryRunes, textRunes[:prefixLength]) {
+			return true
+		}
+	}
+	return false
+}
+
+// withinOneEdit treats an adjacent transposition as one edit in addition to
+// the usual insertion, deletion, and substitution.
+func withinOneEdit(left, right []rune) bool {
+	if len(left) == len(right) {
+		firstMismatch, secondMismatch := -1, -1
+		for index := range left {
+			if left[index] == right[index] {
+				continue
+			}
+			if firstMismatch == -1 {
+				firstMismatch = index
+			} else if secondMismatch == -1 {
+				secondMismatch = index
+			} else {
+				return false
+			}
+		}
+		if secondMismatch == -1 {
+			return true
+		}
+		return secondMismatch == firstMismatch+1 &&
+			left[firstMismatch] == right[secondMismatch] && left[secondMismatch] == right[firstMismatch]
+	}
+	if len(left) > len(right) {
+		left, right = right, left
+	}
+	if len(right)-len(left) != 1 {
+		return false
+	}
+	leftIndex, rightIndex := 0, 0
+	skipped := false
+	for leftIndex < len(left) && rightIndex < len(right) {
+		if left[leftIndex] == right[rightIndex] {
+			leftIndex++
+			rightIndex++
+			continue
+		}
+		if skipped {
+			return false
+		}
+		skipped = true
+		rightIndex++
+	}
+	return true
+}
+
 // SearchItems matches titles and credited people by word prefix (see
 // wordPrefixMatch), so "hanks" finds Tom Hanks films without dredging up
-// Thanksgiving. A person match sorts below every title match, so searching an
-// actor who shares a word with a title still puts the title first, and a
-// result that only matched a cast member never buries the film the query
-// named.
-func (s *Store) SearchItems(ctx context.Context, searchQuery string, limit, offset int) ([]SearchResult, error) {
+// Thanksgiving. If there are no strict matches, it falls back to one-edit
+// fuzzy matches. Fuzzy results never mix with strict ones, and title matches
+// sort above credited-person matches in both modes. The returned bool reports
+// whether the fuzzy fallback was used.
+func (s *Store) SearchItems(
+	ctx context.Context, searchQuery string, limit, offset int,
+) ([]SearchResult, bool, error) {
 	searchQuery = strings.TrimSpace(searchQuery)
 	if searchQuery == "" {
-		return nil, fmt.Errorf("search query must not be empty")
+		return nil, false, fmt.Errorf("search query must not be empty")
 	}
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -779,31 +877,58 @@ func (s *Store) SearchItems(ctx context.Context, searchQuery string, limit, offs
 	if offset < 0 {
 		offset = 0
 	}
+	results, err := s.searchItems(ctx, searchQuery, limit, offset, false)
+	if err != nil || len(results) > 0 {
+		return results, false, err
+	}
+	// An empty later page must not switch to fuzzy results when strict matches
+	// existed on an earlier page.
+	if offset > 0 {
+		firstPage, err := s.searchItems(ctx, searchQuery, 1, 0, false)
+		if err != nil || len(firstPage) > 0 {
+			return results, false, err
+		}
+	}
+	results, err = s.searchItems(ctx, searchQuery, limit, offset, true)
+	return results, true, err
+}
+
+func (s *Store) searchItems(
+	ctx context.Context, searchQuery string, limit, offset int, fuzzy bool,
+) ([]SearchResult, error) {
+	matcher := "word_prefix_match"
+	rank := `CASE
+        WHEN i.title = ? COLLATE NOCASE THEN 0
+        WHEN substr(i.title, 1, length(?)) = ? COLLATE NOCASE THEN 1
+        WHEN word_prefix_match(i.title, ?) THEN 2
+        ELSE 3
+    END`
+	args := []any{searchQuery, searchQuery, searchQuery, searchQuery, searchQuery, searchQuery}
+	if fuzzy {
+		matcher = "fuzzy_word_prefix_match"
+		rank = `CASE WHEN fuzzy_word_prefix_match(i.title, ?) THEN 0 ELSE 1 END`
+		args = []any{searchQuery, searchQuery, searchQuery}
+	}
+	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`,
     COALESCE(series.title, ''), COALESCE(season.title, '')
 FROM items i
 LEFT JOIN items season ON i.kind = 'episode' AND season.id = i.parent_id
 LEFT JOIN items series ON series.id = season.parent_id
 WHERE i.available = 1 AND i.kind IN ('movie', 'show', 'episode')
-    AND (word_prefix_match(i.title, ?)
+    AND (`+matcher+`(i.title, ?)
         OR i.id IN (SELECT c.item_id FROM item_credits c JOIN people p ON p.id = c.person_id
-            WHERE word_prefix_match(p.name, ?)))
-ORDER BY CASE
-        WHEN i.title = ? COLLATE NOCASE THEN 0
-        WHEN substr(i.title, 1, length(?)) = ? COLLATE NOCASE THEN 1
-        WHEN word_prefix_match(i.title, ?) THEN 2
-        ELSE 3
-    END,
+            WHERE `+matcher+`(p.name, ?)))
+ORDER BY `+rank+`,
     i.title COLLATE NOCASE,
     CASE i.kind WHEN 'movie' THEN 0 WHEN 'show' THEN 1 ELSE 2 END,
     i.id
-LIMIT ? OFFSET ?`, searchQuery, searchQuery, searchQuery, searchQuery, searchQuery,
-		searchQuery, limit, offset)
+LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search items: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var results []SearchResult
+	results := make([]SearchResult, 0)
 	for rows.Next() {
 		var result SearchResult
 		item, err := scanItemFields(rows, &result.SeriesTitle, &result.SeasonTitle)

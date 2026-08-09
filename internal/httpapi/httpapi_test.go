@@ -368,22 +368,51 @@ func TestSearchAPI(t *testing.T) {
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
+	type searchResponse struct {
+		Items  []store.SearchResult `json:"items"`
+		Limit  int                  `json:"limit"`
+		Offset int                  `json:"offset"`
+		Fuzzy  bool                 `json:"fuzzy"`
+	}
 	response, err := http.Get(server.URL + "/api/v1/search?q=mov&limit=1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var result struct {
-		Items  []store.SearchResult `json:"items"`
-		Limit  int                  `json:"limit"`
-		Offset int                  `json:"offset"`
+	var result searchResponse
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
 	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(result.Items) != 1 || result.Fuzzy ||
+		result.Items[0].ID != itemID || result.Limit != 1 || result.Offset != 0 {
+		t.Fatalf("search status=%d result=%+v", response.StatusCode, result)
+	}
+
+	response, err = http.Get(server.URL + "/api/v1/search?q=moive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = searchResponse{}
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK || len(result.Items) != 1 ||
-		result.Items[0].ID != itemID || result.Limit != 1 || result.Offset != 0 {
-		t.Fatalf("search status=%d result=%+v", response.StatusCode, result)
+		result.Items[0].ID != itemID || !result.Fuzzy {
+		t.Fatalf("fuzzy search status=%d result=%+v", response.StatusCode, result)
+	}
+
+	response, err = http.Get(server.URL + "/api/v1/search?q=zzzzzz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result = searchResponse{}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || result.Items == nil || len(result.Items) != 0 {
+		t.Fatalf("empty search status=%d result=%+v", response.StatusCode, result)
 	}
 
 	response, err = http.Get(server.URL + "/api/v1/search?q=+")

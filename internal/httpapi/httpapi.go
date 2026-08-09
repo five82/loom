@@ -143,12 +143,14 @@ func (a *API) search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	items, err := a.store.SearchItems(r.Context(), query, limit, offset)
+	items, fuzzy, err := a.store.SearchItems(r.Context(), query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "limit": limit, "offset": offset})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "limit": limit, "offset": offset, "fuzzy": fuzzy,
+	})
 }
 
 func (a *API) items(w http.ResponseWriter, r *http.Request) {

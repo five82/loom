@@ -367,7 +367,7 @@ func TestSearchItems(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := catalog.SearchItems(ctx, "PILOT", 50, 0)
+	results, _, err := catalog.SearchItems(ctx, "PILOT", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,14 +382,14 @@ func TestSearchItems(t *testing.T) {
 		t.Fatalf("episode search context = %+v", results[2])
 	}
 
-	results, err = catalog.SearchItems(ctx, "pilot", 1, 1)
+	results, _, err = catalog.SearchItems(ctx, "pilot", 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 1 || results[0].ID != showID {
 		t.Fatalf("paginated search results = %+v", results)
 	}
-	results, err = catalog.SearchItems(ctx, "%", 50, 0)
+	results, _, err = catalog.SearchItems(ctx, "%", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,21 +438,30 @@ func TestSearchRanksTitleMatchesAboveCreditedPeople(t *testing.T) {
 
 	// The title that names the query wins even though a cast member shares the
 	// word, which is the whole point of ranking person matches last.
-	results, err := catalog.SearchItems(ctx, "Emily", 20, 0)
+	results, fuzzy, err := catalog.SearchItems(ctx, "Emily", 20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 2 || results[0].ID != criminalID || results[1].ID != sicarioID {
-		t.Fatalf("mixed title and cast search = %+v", results)
+	if fuzzy || len(results) != 2 || results[0].ID != criminalID || results[1].ID != sicarioID {
+		t.Fatalf("mixed title and cast search fuzzy=%v results=%+v", fuzzy, results)
 	}
 
 	// A name no title contains still finds the film.
-	results, err = catalog.SearchItems(ctx, "villeneuve", 20, 0)
+	results, fuzzy, err = catalog.SearchItems(ctx, "villeneuve", 20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 1 || results[0].ID != sicarioID {
-		t.Fatalf("director search = %+v", results)
+	if fuzzy || len(results) != 1 || results[0].ID != sicarioID {
+		t.Fatalf("director search fuzzy=%v results=%+v", fuzzy, results)
+	}
+
+	// A typo only falls back to fuzzy matching after strict search finds none.
+	results, fuzzy, err = catalog.SearchItems(ctx, "vileneuve", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fuzzy || len(results) != 1 || results[0].ID != sicarioID {
+		t.Fatalf("mistyped director search fuzzy=%v results=%+v", fuzzy, results)
 	}
 
 	// Search results are browse rows, so they carry no cast list either.
@@ -460,7 +469,7 @@ func TestSearchRanksTitleMatchesAboveCreditedPeople(t *testing.T) {
 		t.Fatalf("search result carried credits: %+v", results[0].Credits)
 	}
 
-	results, err = catalog.SearchItems(ctx, "Kate Macer", 20, 0)
+	results, _, err = catalog.SearchItems(ctx, "Kate Macer", 20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,6 +497,27 @@ func TestWordPrefixMatch(t *testing.T) {
 	for _, c := range cases {
 		if got := wordPrefixMatch(c.text, c.query); got != c.want {
 			t.Errorf("wordPrefixMatch(%q, %q) = %v, want %v", c.text, c.query, got, c.want)
+		}
+	}
+}
+
+func TestFuzzyWordPrefixMatch(t *testing.T) {
+	cases := []struct {
+		text, query string
+		want        bool
+	}{
+		{"Spider-Man", "spidr man", true},   // deletion
+		{"Spider-Man", "spidre man", true},  // transposition
+		{"Spider-Man", "spidex man", true},  // substitution
+		{"Spider-Man", "spidder man", true}, // insertion
+		{"Tom Hanks", "hnaks", true},
+		{"Tom Hanks", "hnk", false},       // short words get no tolerance
+		{"Spider-Man", "spidr mn", false}, // every query word must match
+		{"Spider-Man", "%", false},
+	}
+	for _, c := range cases {
+		if got := fuzzyWordPrefixMatch(c.text, c.query); got != c.want {
+			t.Errorf("fuzzyWordPrefixMatch(%q, %q) = %v, want %v", c.text, c.query, got, c.want)
 		}
 	}
 }
@@ -527,7 +557,7 @@ func TestSearchMatchesWordStartsOnly(t *testing.T) {
 	}
 
 	// "hanks" only starts a word in the actor's name, not in "Thanksgiving".
-	results, err := catalog.SearchItems(ctx, "hanks", 20, 0)
+	results, _, err := catalog.SearchItems(ctx, "hanks", 20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +565,7 @@ func TestSearchMatchesWordStartsOnly(t *testing.T) {
 		t.Fatalf("cast search matched mid-word titles: %+v", results)
 	}
 
-	results, err = catalog.SearchItems(ctx, "thanks", 20, 0)
+	results, _, err = catalog.SearchItems(ctx, "thanks", 20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
