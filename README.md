@@ -79,9 +79,41 @@ loom logs --follow
 loom stop
 ```
 
-`loom start` launches a detached daemon and waits for its Unix control socket
-to become ready. `loom stop` requests a graceful shutdown over that socket. A
-PID file is not used.
+Without further setup, `loom start` launches a detached daemon and waits for
+its Unix control socket to become ready. `loom stop` requests a graceful
+shutdown over that socket. A PID file is not used.
+
+Loom can optionally install a systemd user service:
+
+```bash
+loom service install
+```
+
+This requires a config file, writes `loom.service` under the systemd user unit
+directory, enables it, moves any running detached daemon under systemd, and
+starts it. The unit records the current Loom executable, config file, and
+`ffprobe` location, so uninstall and reinstall it after moving any of them.
+Installation is opt-in; Loom never installs the service during a build or
+deployment.
+
+The usual `loom start`, `loom stop`, and `loom restart` commands automatically
+use systemd while the service is installed. Remove it and return to detached
+operation with:
+
+```bash
+loom service uninstall
+```
+
+A systemd user service normally starts when its user logs in. To start Loom
+during boot before login, enable lingering once for that user:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+`loom service install` reports whether this step is needed. Loom's structured
+application log remains available through `loom logs`; startup failures are
+also available through `journalctl --user -u loom.service`.
 
 To ship the working tree to the running server:
 

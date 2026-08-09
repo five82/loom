@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"github.com/five82/loom/internal/daemonctl"
 	"github.com/five82/loom/internal/daemonrun"
 	"github.com/five82/loom/internal/store"
+	loomsystemd "github.com/five82/loom/internal/systemd"
 	"github.com/five82/loom/internal/tmdb"
 )
 
@@ -49,8 +51,8 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(
 		newStartCommand(), newStopCommand(), newRestartCommand(), newStatusCommand(),
 		newScanCommand(), newUnmatchedCommand(), newSearchCommand(), newMatchCommand(),
-		newLogsCommand(), newBackupCommand(), newConfigCommand(), newDeveloperCommand(),
-		newDaemonCommand(),
+		newLogsCommand(), newBackupCommand(), newConfigCommand(), newServiceCommand(),
+		newDeveloperCommand(), newDaemonCommand(),
 	)
 	return root
 }
@@ -67,7 +69,7 @@ func newStartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "start",
 		Short: "Start the Loom daemon",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(command *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
@@ -79,7 +81,18 @@ func newStartCommand() *cobra.Command {
 			if err := cfg.EnsureStateDir(); err != nil {
 				return err
 			}
-			if err := daemonctl.Start(daemonctl.StartOptions{
+			installed, err := loomsystemd.Installed()
+			if err != nil {
+				return err
+			}
+			if installed {
+				if err := loomsystemd.Start(command.Context()); err != nil {
+					return err
+				}
+				if err := daemonctl.WaitUntilRunning(command.Context(), cfg.LockPath(), cfg.SocketPath(), 10*time.Second); err != nil {
+					return err
+				}
+			} else if err := daemonctl.Start(daemonctl.StartOptions{
 				LockPath: cfg.LockPath(), SocketPath: cfg.SocketPath(),
 				LogPath: cfg.DaemonConsoleLogPath(), ConfigPath: cfg.SourcePath,
 			}); err != nil {
@@ -95,18 +108,33 @@ func newStopCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "stop",
 		Short: "Stop the Loom daemon",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(command *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
 			}
-			err = daemonctl.Stop(cfg.LockPath(), cfg.SocketPath())
-			if errors.Is(err, daemonctl.ErrNotRunning) {
-				fmt.Println("Daemon is not running")
-				return nil
-			}
+			installed, err := loomsystemd.Installed()
 			if err != nil {
 				return err
+			}
+			if installed {
+				running := daemonctl.IsRunning(cfg.LockPath(), cfg.SocketPath())
+				if err := loomsystemd.Stop(command.Context()); err != nil {
+					return err
+				}
+				if !running {
+					fmt.Println("Daemon is not running")
+					return nil
+				}
+			} else {
+				err = daemonctl.Stop(cfg.LockPath(), cfg.SocketPath())
+				if errors.Is(err, daemonctl.ErrNotRunning) {
+					fmt.Println("Daemon is not running")
+					return nil
+				}
+				if err != nil {
+					return err
+				}
 			}
 			fmt.Println("Daemon stopped")
 			return nil
@@ -118,23 +146,36 @@ func newRestartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",
 		Short: "Restart the Loom daemon",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(command *cobra.Command, _ []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
-				return err
-			}
-			err = daemonctl.Stop(cfg.LockPath(), cfg.SocketPath())
-			if err != nil && !errors.Is(err, daemonctl.ErrNotRunning) {
 				return err
 			}
 			if err := cfg.EnsureStateDir(); err != nil {
 				return err
 			}
-			if err := daemonctl.Start(daemonctl.StartOptions{
-				LockPath: cfg.LockPath(), SocketPath: cfg.SocketPath(),
-				LogPath: cfg.DaemonConsoleLogPath(), ConfigPath: cfg.SourcePath,
-			}); err != nil {
+			installed, err := loomsystemd.Installed()
+			if err != nil {
 				return err
+			}
+			if installed {
+				if err := loomsystemd.Restart(command.Context()); err != nil {
+					return err
+				}
+				if err := daemonctl.WaitUntilRunning(command.Context(), cfg.LockPath(), cfg.SocketPath(), 10*time.Second); err != nil {
+					return err
+				}
+			} else {
+				err = daemonctl.Stop(cfg.LockPath(), cfg.SocketPath())
+				if err != nil && !errors.Is(err, daemonctl.ErrNotRunning) {
+					return err
+				}
+				if err := daemonctl.Start(daemonctl.StartOptions{
+					LockPath: cfg.LockPath(), SocketPath: cfg.SocketPath(),
+					LogPath: cfg.DaemonConsoleLogPath(), ConfigPath: cfg.SourcePath,
+				}); err != nil {
+					return err
+				}
 			}
 			fmt.Println("Daemon restarted")
 			return nil
@@ -456,6 +497,95 @@ func newConfigCommand() *cobra.Command {
 				} else {
 					fmt.Printf("Configuration valid: %s\n", cfg.SourcePath)
 				}
+				return nil
+			},
+		},
+	)
+	return command
+}
+
+func newServiceCommand() *cobra.Command {
+	command := &cobra.Command{
+		Use:   "service",
+		Short: "Manage the optional systemd user service",
+	}
+	command.AddCommand(
+		&cobra.Command{
+			Use:   "install",
+			Short: "Install and start the systemd user service",
+			RunE: func(command *cobra.Command, _ []string) error {
+				installed, err := loomsystemd.Installed()
+				if err != nil {
+					return err
+				}
+				if installed {
+					fmt.Println("systemd service is already installed")
+					return nil
+				}
+				cfg, err := loadConfig()
+				if err != nil {
+					return err
+				}
+				if cfg.SourcePath == "" {
+					return errors.New("systemd service installation requires a config file; run `loom config init` first")
+				}
+				if err := cfg.EnsureStateDir(); err != nil {
+					return err
+				}
+				executable, err := os.Executable()
+				if err != nil {
+					return fmt.Errorf("resolve Loom executable: %w", err)
+				}
+				ffprobePath, err := exec.LookPath("ffprobe")
+				if err != nil {
+					return errors.New("required command ffprobe was not found in PATH")
+				}
+				unitPath, err := loomsystemd.Install(command.Context(), executable, cfg.SourcePath, ffprobePath)
+				if err != nil {
+					return err
+				}
+				if daemonctl.IsRunning(cfg.LockPath(), cfg.SocketPath()) {
+					if err := daemonctl.Stop(cfg.LockPath(), cfg.SocketPath()); err != nil {
+						if cleanupErr := loomsystemd.Uninstall(command.Context()); cleanupErr != nil {
+							return fmt.Errorf("stop existing daemon: %v; remove incomplete service installation: %w", err, cleanupErr)
+						}
+						return fmt.Errorf("stop existing daemon: %w", err)
+					}
+				}
+				if err := loomsystemd.Start(command.Context()); err != nil {
+					return err
+				}
+				if err := daemonctl.WaitUntilRunning(command.Context(), cfg.LockPath(), cfg.SocketPath(), 10*time.Second); err != nil {
+					return err
+				}
+				fmt.Printf("systemd service installed: %s\n", unitPath)
+				fmt.Println("Daemon started")
+				linger, err := loomsystemd.LingerEnabled(command.Context())
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not check systemd lingering: %v\n", err)
+				} else if !linger {
+					fmt.Println("\nTo start Loom during boot rather than at login, run:")
+					fmt.Println(`  sudo loginctl enable-linger "$USER"`)
+				}
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "uninstall",
+			Short: "Stop and remove the systemd user service",
+			RunE: func(command *cobra.Command, _ []string) error {
+				installed, err := loomsystemd.Installed()
+				if err != nil {
+					return err
+				}
+				if !installed {
+					fmt.Println("systemd service is not installed")
+					return nil
+				}
+				if err := loomsystemd.Uninstall(command.Context()); err != nil {
+					return err
+				}
+				fmt.Println("systemd service uninstalled")
 				return nil
 			},
 		},

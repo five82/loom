@@ -93,6 +93,26 @@ func Start(opts StartOptions) error {
 	return fmt.Errorf("daemon did not become ready within 10 seconds")
 }
 
+// WaitUntilRunning waits for a daemon started by an external supervisor.
+func WaitUntilRunning(ctx context.Context, lockPath, socketPath string, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if IsRunning(lockPath, socketPath) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("daemon did not become ready within %s", timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
 func Stop(lockPath, socketPath string) error {
 	if !IsRunning(lockPath, socketPath) {
 		return ErrNotRunning
