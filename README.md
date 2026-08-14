@@ -253,15 +253,16 @@ libraries.
 ## Library conventions
 
 Movies and short films use the same layout: one first-level directory containing
-exactly one video file directly inside it:
+exactly one video file directly inside it. Directory and file names include the
+TMDB ID:
 
 ```text
 movies/
-  Arrival (2016)/
-    Arrival (2016).mkv
+  Arrival (2016) [tmdbid-329865]/
+    Arrival (2016) [tmdbid-329865].mkv
 shorts/
-  Presto (2008)/
-    Presto (2008).mkv
+  Presto (2008) [tmdbid-13042]/
+    Presto (2008) [tmdbid-13042].mkv
 ```
 
 Nested movie and short film videos are ignored, including anything under
@@ -273,22 +274,23 @@ come from the filename:
 
 ```text
 tv/
-  The Office (US)/
-    Season 4/
-      The Office (US) - S04E01-02 - Fun Run.mkv
+  The Office (2005) [tmdbid-2316]/
+    Season 04/
+      The Office - S04E01-02 - Fun Run.mkv
 ```
 
 Loom recognizes `SxxEyy` and `SxxEyy-zz`, including season zero specials and
 season numbers longer than two digits. Videos without an episode identifier are
-cataloged as unmatched.
+cataloged as unmatched. The TMDB ID in a movie or show directory is authoritative:
+Loom applies it directly instead of searching by title and year.
 
-Replacing a file with a new encode is expected. A movie is identified by its
-first-level directory name and an episode by its season and episode numbers, so
-a replacement file can be named anything and the TMDB match, artwork selection,
-and playback state carry over. Renaming a movie directory, or changing an
-episode's numbers, creates a new item and leaves the old state behind. Unmatched
-videos are still identified by filename because they have no episode numbers to
-key on.
+Replacing or renaming a file is expected. A movie or show is identified by the
+TMDB ID in its directory, and an episode by its show, season, and episode
+numbers, so matches, manual artwork selections, and playback state carry over
+when standard names are corrected. Changing the TMDB ID or an episode's numbers
+creates a different item rather than carrying state across different media.
+Unmatched videos are still identified by filename because they have no episode
+numbers to key on.
 
 The old file does not have to disappear at the same instant the new one lands.
 While several videos share a movie directory, or claim one episode, Loom uses

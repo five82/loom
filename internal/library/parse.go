@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	namedTMDBPattern  = regexp.MustCompile(`^(.*?)\s+\(([0-9]{4})\)\s+\[tmdbid-([0-9]+)\]$`)
 	yearSuffixPattern = regexp.MustCompile(`^(.*?)\s+\(([0-9]{4})\)$`)
 	episodePattern    = regexp.MustCompile(`(?i)\bS([0-9]{1,4})E([0-9]{1,4})(?:-(?:E)?([0-9]{1,4}))?\b`)
 )
@@ -28,13 +29,19 @@ func isVideo(path string) bool {
 	return videoExtensions[strings.ToLower(filepath.Ext(path))]
 }
 
-func parseNamedYear(name string) (string, int) {
-	match := yearSuffixPattern.FindStringSubmatch(strings.TrimSpace(name))
-	if match == nil {
-		return strings.TrimSpace(name), 0
+func parseNamedIdentity(name string) (title string, year int, tmdbID int64) {
+	name = strings.TrimSpace(name)
+	if match := namedTMDBPattern.FindStringSubmatch(name); match != nil {
+		year, _ = strconv.Atoi(match[2])
+		tmdbID, _ = strconv.ParseInt(match[3], 10, 64)
+		return strings.TrimSpace(match[1]), year, tmdbID
 	}
-	year, _ := strconv.Atoi(match[2])
-	return strings.TrimSpace(match[1]), year
+	match := yearSuffixPattern.FindStringSubmatch(name)
+	if match == nil {
+		return name, 0, 0
+	}
+	year, _ = strconv.Atoi(match[2])
+	return strings.TrimSpace(match[1]), year, 0
 }
 
 type episodeNumbers struct {

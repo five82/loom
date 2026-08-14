@@ -21,6 +21,29 @@ func (p *fakeProber) Probe(_ context.Context, path string) (ProbeResult, error) 
 	return ProbeResult{DurationMS: 600_000, Container: "matroska", Streams: []store.Stream{{Index: 0, Kind: "video", Codec: "av1"}}}, nil
 }
 
+func TestParseNamedIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantTitle string
+		wantYear  int
+		wantTMDB  int64
+	}{
+		{"Arrival (2016) [tmdbid-329865]", "Arrival", 2016, 329865},
+		{"The Office (US) (2005) [tmdbid-2316]", "The Office (US)", 2005, 2316},
+		{"Presto (2008)", "Presto", 2008, 0},
+		{"Home Video", "Home Video", 0, 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			title, year, tmdbID := parseNamedIdentity(test.name)
+			if title != test.wantTitle || year != test.wantYear || tmdbID != test.wantTMDB {
+				t.Fatalf("parse = %q, %d, %d; want %q, %d, %d",
+					title, year, tmdbID, test.wantTitle, test.wantYear, test.wantTMDB)
+			}
+		})
+	}
+}
+
 func TestParseEpisodeFilename(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -48,10 +71,10 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	movies := filepath.Join(root, "movies")
 	shorts := filepath.Join(root, "shorts")
 	tv := filepath.Join(root, "tv")
-	writeTestFile(t, filepath.Join(movies, "Arrival (2016)", "Arrival (2016).mkv"))
-	writeTestFile(t, filepath.Join(shorts, "Presto (2008)", "Presto (2008).mkv"))
-	writeTestFile(t, filepath.Join(movies, "Arrival (2016)", "extras", "Bonus.mkv"))
-	writeTestFile(t, filepath.Join(tv, "The Office (US)", "Season 4", "The Office (US) - S04E01-02 - Fun Run.mkv"))
+	writeTestFile(t, filepath.Join(movies, "Arrival (2016) [tmdbid-329865]", "Arrival (2016) [tmdbid-329865].mkv"))
+	writeTestFile(t, filepath.Join(shorts, "Presto (2008) [tmdbid-13042]", "Presto (2008) [tmdbid-13042].mkv"))
+	writeTestFile(t, filepath.Join(movies, "Arrival (2016) [tmdbid-329865]", "extras", "Bonus.mkv"))
+	writeTestFile(t, filepath.Join(tv, "The Office (US) (2005) [tmdbid-2316]", "Season 4", "The Office (US) - S04E01-02 - Fun Run.mkv"))
 	writeTestFile(t, filepath.Join(tv, "Stephen King's IT (1990)", "Stephen King's IT (1990).mkv"))
 
 	catalog, err := store.Open(filepath.Join(root, "state", "loom.db"))
@@ -77,7 +100,7 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Movies != 1 || stats.Shorts != 1 || stats.Shows != 2 || stats.Episodes != 1 || stats.Unmatched != 5 || stats.Media != 4 {
+	if stats.Movies != 1 || stats.Shorts != 1 || stats.Shows != 2 || stats.Episodes != 1 || stats.Unmatched != 2 || stats.Media != 4 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 	libraries, err := catalog.Libraries(context.Background())
@@ -94,7 +117,8 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(shortItems) != 1 || shortItems[0].Kind != "movie" || shortItems[0].Title != "Presto" {
+	if len(shortItems) != 1 || shortItems[0].Kind != "movie" || shortItems[0].Title != "Presto" ||
+		shortItems[0].Year != 2008 || shortItems[0].TMDBID != 13042 {
 		t.Fatalf("short items = %+v", shortItems)
 	}
 
@@ -107,9 +131,12 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	}
 	var officeID int64
 	for _, show := range shows {
-		if show.Title == "The Office (US)" {
+		if show.Title == "The Office (US)" && show.Year == 2005 && show.TMDBID == 2316 {
 			officeID = show.ID
 		}
+	}
+	if officeID == 0 {
+		t.Fatalf("standard TV name did not seed TMDB identity: %+v", shows)
 	}
 	seasons, err := catalog.ListItems(context.Background(), store.ListOptions{ParentID: &officeID})
 	if err != nil {
@@ -124,6 +151,159 @@ func TestScannerUsesMovieRootFilesAndRecursiveTVEpisodes(t *testing.T) {
 	}
 	if len(episodes) != 1 || episodes[0].EpisodeNumber != 1 || episodes[0].EpisodeEndNumber != 2 {
 		t.Fatalf("unexpected episodes: %+v", episodes)
+	}
+}
+
+func TestScannerPreservesMovieStateAcrossStandardRename(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	movies := filepath.Join(root, "movies")
+	oldDir := filepath.Join(movies, "Arrival (2016)")
+	oldVideo := filepath.Join(oldDir, "Arrival (2016).mkv")
+	writeTestFile(t, oldVideo)
+
+	catalog, err := store.Open(filepath.Join(root, "state", "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	scanner := NewScanner(catalog, &fakeProber{}, nil, movies,
+		filepath.Join(root, "shorts"), filepath.Join(root, "tv"),
+		slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	if err := scanner.Scan(ctx, "movies"); err != nil {
+		t.Fatal(err)
+	}
+	items, err := catalog.ListItems(ctx, store.ListOptions{LibraryKind: "movies", TopLevel: true})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("initial movies = %+v, %v", items, err)
+	}
+	beforeID := items[0].ID
+	if err := catalog.UpdateMetadata(ctx, beforeID, store.MetadataUpdate{
+		TMDBID: 329865, Title: "Arrival", Year: 2016,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetProgress(ctx, beforeID, 120_000, 600_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertImage(ctx, store.Image{
+		ItemID: beforeID, Kind: "poster", Path: filepath.Join(root, "poster.jpg"),
+		SourceURL: "https://image.test/poster.jpg", Provider: "tmdb",
+		ProviderPath: "/manual.jpg", Tag: "manual", ContentType: "image/jpeg",
+		ManuallySelected: true, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newDir := filepath.Join(movies, "Arrival (2016) [tmdbid-329865]")
+	if err := os.Rename(oldDir, newDir); err != nil {
+		t.Fatal(err)
+	}
+	newVideo := filepath.Join(newDir, "Arrival (2016) [tmdbid-329865].mkv")
+	if err := os.Rename(filepath.Join(newDir, filepath.Base(oldVideo)), newVideo); err != nil {
+		t.Fatal(err)
+	}
+	if err := scanner.Scan(ctx, "movies"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err = catalog.ListItems(ctx, store.ListOptions{LibraryKind: "movies", TopLevel: true})
+	if err != nil || len(items) != 1 || items[0].ID != beforeID {
+		t.Fatalf("renamed movies = %+v, %v; want item %d", items, err, beforeID)
+	}
+	after, err := catalog.Item(ctx, beforeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Progress == nil || after.Progress.ResumePositionMS != 120_000 {
+		t.Fatalf("rename lost playback state: %+v", after.Progress)
+	}
+	poster, err := catalog.ItemImage(ctx, beforeID, "poster")
+	if err != nil || !poster.ManuallySelected || poster.ProviderPath != "/manual.jpg" {
+		t.Fatalf("rename lost manual poster: %+v, %v", poster, err)
+	}
+	if after.Media == nil || after.Media.Path != newVideo {
+		t.Fatalf("rename did not update media path: %+v", after.Media)
+	}
+}
+
+func TestScannerPreservesTVStateAcrossStandardRename(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	oldShowDir := filepath.Join(root, "tv", "The Office")
+	oldVideo := filepath.Join(oldShowDir, "Season 01", "The Office - S01E01.mkv")
+	writeTestFile(t, oldVideo)
+	catalog, scanner := newTVScanner(t, root)
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+	shows, err := catalog.ListItems(ctx, store.ListOptions{LibraryKind: "tv", TopLevel: true})
+	if err != nil || len(shows) != 1 {
+		t.Fatalf("initial shows = %+v, %v", shows, err)
+	}
+	showID := shows[0].ID
+	if err := catalog.UpdateMetadata(ctx, showID, store.MetadataUpdate{
+		TMDBID: 2316, Title: "The Office", Year: 2005,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seasons, err := catalog.ListItems(ctx, store.ListOptions{ParentID: &showID})
+	if err != nil || len(seasons) != 1 {
+		t.Fatalf("initial seasons = %+v, %v", seasons, err)
+	}
+	seasonID := seasons[0].ID
+	episodes := tvEpisodes(t, catalog)
+	if len(episodes) != 1 {
+		t.Fatalf("initial episodes = %+v", episodes)
+	}
+	episodeID := episodes[0].ID
+	if _, err := catalog.SetProgress(ctx, episodeID, 120_000, 600_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertImage(ctx, store.Image{
+		ItemID: seasonID, Kind: "poster", Path: filepath.Join(root, "season-poster.jpg"),
+		SourceURL: "https://image.test/season.jpg", Provider: "tmdb",
+		ProviderPath: "/manual-season.jpg", Tag: "manual", ContentType: "image/jpeg",
+		ManuallySelected: true, UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	newShowDir := filepath.Join(root, "tv", "The Office (2005) [tmdbid-2316]")
+	if err := os.Rename(oldShowDir, newShowDir); err != nil {
+		t.Fatal(err)
+	}
+	newVideo := filepath.Join(newShowDir, "Season 01", "The Office - S01E01 - Pilot.mkv")
+	if err := os.Rename(filepath.Join(newShowDir, "Season 01", filepath.Base(oldVideo)), newVideo); err != nil {
+		t.Fatal(err)
+	}
+	if err := scanner.Scan(ctx, "tv"); err != nil {
+		t.Fatal(err)
+	}
+
+	shows, err = catalog.ListItems(ctx, store.ListOptions{LibraryKind: "tv", TopLevel: true})
+	if err != nil || len(shows) != 1 || shows[0].ID != showID {
+		t.Fatalf("renamed shows = %+v, %v; want item %d", shows, err, showID)
+	}
+	seasons, err = catalog.ListItems(ctx, store.ListOptions{ParentID: &showID})
+	if err != nil || len(seasons) != 1 || seasons[0].ID != seasonID {
+		t.Fatalf("renamed seasons = %+v, %v; want item %d", seasons, err, seasonID)
+	}
+	episodes = tvEpisodes(t, catalog)
+	if len(episodes) != 1 || episodes[0].ID != episodeID {
+		t.Fatalf("renamed episodes = %+v; want item %d", episodes, episodeID)
+	}
+	after, err := catalog.Item(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Progress == nil || after.Progress.ResumePositionMS != 120_000 ||
+		after.Media == nil || after.Media.Path != newVideo {
+		t.Fatalf("rename lost episode state: %+v", after)
+	}
+	poster, err := catalog.ItemImage(ctx, seasonID, "poster")
+	if err != nil || !poster.ManuallySelected || poster.ProviderPath != "/manual-season.jpg" {
+		t.Fatalf("rename lost manual season poster: %+v, %v", poster, err)
 	}
 }
 

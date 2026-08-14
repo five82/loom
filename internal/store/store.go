@@ -389,21 +389,29 @@ type ItemInput struct {
 	SeasonNumber     int
 	EpisodeNumber    int
 	EpisodeEndNumber int
+	TMDBID           int64
 	ScanID           int64
 }
 
 func (s *Store) UpsertItem(ctx context.Context, item ItemInput) (int64, error) {
 	timestamp := now()
+	if id, adopted, err := s.adoptRenamedItem(ctx, item, timestamp); err != nil {
+		return 0, err
+	} else if adopted {
+		return id, nil
+	}
+
 	var id int64
 	err := s.db.QueryRowContext(ctx, `
 INSERT INTO items(library_id, parent_id, source_key, kind, title, year, season_number,
-    episode_number, episode_end_number, available, last_seen_scan_id, added_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    episode_number, episode_end_number, tmdb_id, available, last_seen_scan_id, added_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
 ON CONFLICT(library_id, source_key) DO UPDATE SET
     parent_id = excluded.parent_id,
     kind = excluded.kind,
     title = CASE WHEN items.tmdb_id = 0 THEN excluded.title ELSE items.title END,
     year = CASE WHEN items.tmdb_id = 0 THEN excluded.year ELSE items.year END,
+    tmdb_id = CASE WHEN items.tmdb_id = 0 THEN excluded.tmdb_id ELSE items.tmdb_id END,
     season_number = excluded.season_number,
     episode_number = excluded.episode_number,
     episode_end_number = excluded.episode_end_number,
@@ -411,12 +419,72 @@ ON CONFLICT(library_id, source_key) DO UPDATE SET
     last_seen_scan_id = excluded.last_seen_scan_id,
     updated_at = excluded.updated_at
 RETURNING id`, item.LibraryID, item.ParentID, item.SourceKey, item.Kind, item.Title,
-		item.Year, item.SeasonNumber, item.EpisodeNumber, item.EpisodeEndNumber,
+		item.Year, item.SeasonNumber, item.EpisodeNumber, item.EpisodeEndNumber, item.TMDBID,
 		item.ScanID, timestamp, timestamp).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("upsert %s %q: %w", item.Kind, item.Title, err)
 	}
 	return id, nil
+}
+
+// adoptRenamedItem keeps durable state attached when a scanner key changes.
+// Top-level standard names carry their TMDB identity; children can then be
+// recognized by their parent and numbering even though the show directory was
+// renamed around them.
+func (s *Store) adoptRenamedItem(ctx context.Context, item ItemInput, timestamp string) (int64, bool, error) {
+	where := ""
+	var identityArgs []any
+	switch {
+	case item.ParentID == nil && item.TMDBID != 0 && (item.Kind == "movie" || item.Kind == "show"):
+		where = `parent_id IS NULL AND kind = ? AND tmdb_id = ?`
+		identityArgs = []any{item.Kind, item.TMDBID}
+	case item.ParentID != nil && item.Kind == "season":
+		where = `parent_id = ? AND kind = 'season' AND season_number = ?`
+		identityArgs = []any{*item.ParentID, item.SeasonNumber}
+	case item.ParentID != nil && item.Kind == "episode":
+		where = `parent_id = ? AND kind = 'episode' AND season_number = ?
+            AND episode_number = ? AND episode_end_number = ?`
+		identityArgs = []any{*item.ParentID, item.SeasonNumber, item.EpisodeNumber, item.EpisodeEndNumber}
+	default:
+		return 0, false, nil
+	}
+
+	args := []any{
+		item.SourceKey, item.ParentID, item.Kind, item.Title, item.Year, item.TMDBID,
+		item.SeasonNumber, item.EpisodeNumber, item.EpisodeEndNumber, item.ScanID, timestamp,
+		item.LibraryID,
+	}
+	args = append(args, identityArgs...)
+	args = append(args, item.SourceKey)
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+UPDATE items SET
+    source_key = ?,
+    parent_id = ?,
+    kind = ?,
+    title = CASE WHEN tmdb_id = 0 THEN ? ELSE title END,
+    year = CASE WHEN tmdb_id = 0 THEN ? ELSE year END,
+    tmdb_id = CASE WHEN tmdb_id = 0 THEN ? ELSE tmdb_id END,
+    season_number = ?,
+    episode_number = ?,
+    episode_end_number = ?,
+    available = 1,
+    last_seen_scan_id = ?,
+    updated_at = ?
+WHERE id = (
+    SELECT id FROM items
+    WHERE library_id = ? AND `+where+`
+    ORDER BY (source_key = ?) DESC, available DESC, last_seen_scan_id DESC, id DESC
+    LIMIT 1
+)
+RETURNING id`, args...).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("adopt renamed %s %q: %w", item.Kind, item.Title, err)
+	}
+	return id, true, nil
 }
 
 // MediaFile is a directly playable source file.

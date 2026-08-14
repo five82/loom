@@ -172,10 +172,14 @@ func (s *Scanner) scanMovies(ctx context.Context, libraryID, scanID int64, root 
 			s.logger.Warn("movie directory has more than one video", "path", dir,
 				"using", candidates[0].path, "video_files", len(candidates))
 		}
-		title, year := parseNamedYear(entry.Name())
+		title, year, tmdbID := parseNamedIdentity(entry.Name())
+		sourceKey := entry.Name()
+		if tmdbID != 0 {
+			sourceKey = fmt.Sprintf("tmdb:%d", tmdbID)
+		}
 		itemID, err := s.store.UpsertItem(ctx, store.ItemInput{
-			LibraryID: libraryID, SourceKey: entry.Name(), Kind: "movie",
-			Title: title, Year: year, ScanID: scanID,
+			LibraryID: libraryID, SourceKey: sourceKey, Kind: "movie",
+			Title: title, Year: year, TMDBID: tmdbID, ScanID: scanID,
 		})
 		if err != nil {
 			return err
@@ -230,10 +234,14 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 			continue
 		}
 		sortNewestFirst(videos)
-		showTitle, showYear := parseNamedYear(entry.Name())
+		showTitle, showYear, tmdbID := parseNamedIdentity(entry.Name())
+		showKey := "show:" + entry.Name()
+		if tmdbID != 0 {
+			showKey = fmt.Sprintf("show:tmdb:%d", tmdbID)
+		}
 		showID, err := s.store.UpsertItem(ctx, store.ItemInput{
-			LibraryID: libraryID, SourceKey: "show:" + entry.Name(), Kind: "show",
-			Title: showTitle, Year: showYear, ScanID: scanID,
+			LibraryID: libraryID, SourceKey: showKey, Kind: "show",
+			Title: showTitle, Year: showYear, TMDBID: tmdbID, ScanID: scanID,
 		})
 		if err != nil {
 			return err
@@ -267,7 +275,7 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 				parentID := showID
 				seasonID, err = s.store.UpsertItem(ctx, store.ItemInput{
 					LibraryID: libraryID, ParentID: &parentID,
-					SourceKey: fmt.Sprintf("show:%s:season:%d", entry.Name(), numbers.Season),
+					SourceKey: fmt.Sprintf("%s:season:%d", showKey, numbers.Season),
 					Kind:      "season", Title: seasonTitle(numbers.Season),
 					SeasonNumber: numbers.Season, ScanID: scanID,
 				})
@@ -279,7 +287,7 @@ func (s *Scanner) scanTV(ctx context.Context, libraryID, scanID int64, root stri
 			// An episode is identified by its number rather than its filename so a
 			// replacement encode under a new name keeps the same item, and with it
 			// the TMDB match and playback state.
-			sourceKey := episodeSourceKey(entry.Name(), numbers)
+			sourceKey := episodeSourceKey(showKey, numbers)
 			if existing, duplicate := episodePaths[sourceKey]; duplicate {
 				// Two files claim one episode, which normally means a replacement
 				// encode landed before the old file was removed. Videos are ordered
@@ -321,8 +329,8 @@ func (s *Scanner) autoMatch(ctx context.Context, itemID int64, counters *scanCou
 
 // episodeSourceKey extends the season key so an episode's catalog identity is
 // its position in the show rather than the file that currently provides it.
-func episodeSourceKey(showDir string, numbers episodeNumbers) string {
-	return fmt.Sprintf("show:%s:season:%d:episode:%d-%d", showDir, numbers.Season, numbers.Start, numbers.End)
+func episodeSourceKey(showKey string, numbers episodeNumbers) string {
+	return fmt.Sprintf("%s:season:%d:episode:%d-%d", showKey, numbers.Season, numbers.Start, numbers.End)
 }
 
 func seasonTitle(number int) string {
