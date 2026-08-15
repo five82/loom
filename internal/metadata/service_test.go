@@ -358,10 +358,10 @@ func TestTVSeasonPosterArtwork(t *testing.T) {
 		})
 	}
 	mux.HandleFunc("/tv/100/season/1", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"id":1001,"poster_path":"/season.jpg","episodes":[{"id":101,"episode_number":1,"name":"Pilot","overview":"First episode","air_date":"2020-01-01"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":1001,"poster_path":"/season.jpg","episodes":[{"id":101,"episode_number":1,"name":"Pilot","overview":"First episode","air_date":"2020-01-01","still_path":"/pilot.jpg"}]}`)
 	})
 	mux.HandleFunc("/tv/200/season/1", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = fmt.Fprint(w, `{"id":2001,"poster_path":"/other-season.jpg","episodes":[{"id":201,"episode_number":1,"name":"New Pilot"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":2001,"poster_path":"/other-season.jpg","episodes":[{"id":201,"episode_number":1,"name":"New Pilot","still_path":"/new-pilot.jpg"}]}`)
 	})
 	mux.HandleFunc("/tv/100/season/1/images", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `{"posters":[{"file_path":"/season.jpg","width":2,"height":3},{"file_path":"/alternate-season.jpg","width":2,"height":3}]}`)
@@ -430,6 +430,13 @@ func TestTVSeasonPosterArtwork(t *testing.T) {
 	if episode.Title != "Pilot" || episode.PosterImageID != poster.ID {
 		t.Fatalf("episode metadata and inherited poster = %+v", episode)
 	}
+	episodeThumb, err := catalog.ItemImage(ctx, episodeID, "thumb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episodeThumb.ProviderPath != "/pilot.jpg" || !strings.Contains(episodeThumb.SourceURL, "/w780/") {
+		t.Fatalf("episode still = %+v", episodeThumb)
+	}
 	options, err := service.ImageOptions(ctx, seasonID, "poster")
 	if err != nil {
 		t.Fatal(err)
@@ -474,6 +481,13 @@ func TestTVSeasonPosterArtwork(t *testing.T) {
 	}
 	if replaced.ManuallySelected || replaced.ProviderPath != "/other-season.jpg" {
 		t.Fatalf("season poster survived show identity change: %+v", replaced)
+	}
+	replacedThumb, err := catalog.ItemImage(ctx, episodeID, "thumb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacedThumb.ProviderPath != "/new-pilot.jpg" {
+		t.Fatalf("episode still survived show identity change: %+v", replacedThumb)
 	}
 
 	if err := catalog.DeleteItemImage(ctx, seasonID, "poster"); err != nil {
@@ -611,16 +625,22 @@ func TestAutoMatchBackfillsMissingArtwork(t *testing.T) {
 	}
 }
 
-func TestAutoMatchBackfillsEpisodesAddedAfterTheShowWasMatched(t *testing.T) {
+func TestAutoMatchBackfillsEpisodeMetadataAndStills(t *testing.T) {
+	imageBytes := encodedPNG(t, color.RGBA{R: 255, A: 255})
 	var seasonRequests [3]atomic.Int32
+	var stillRequests atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tv/100/season/1", func(w http.ResponseWriter, _ *http.Request) {
 		seasonRequests[1].Add(1)
-		_, _ = fmt.Fprint(w, `{"season_number":1,"poster_path":"/season.jpg","episodes":[{"id":501,"episode_number":1,"name":"Pilot"},{"id":502,"episode_number":2,"name":"Second Contact","overview":"They meet again."}]}`)
+		_, _ = fmt.Fprint(w, `{"season_number":1,"poster_path":"/season.jpg","episodes":[{"id":501,"episode_number":1,"name":"Pilot","still_path":"/pilot.jpg"},{"id":502,"episode_number":2,"name":"Second Contact","overview":"They meet again.","still_path":"/second.jpg"}]}`)
 	})
 	mux.HandleFunc("/tv/100/season/2", func(w http.ResponseWriter, _ *http.Request) {
 		seasonRequests[2].Add(1)
-		_, _ = fmt.Fprint(w, `{"season_number":2,"poster_path":"/season-two.jpg","episodes":[{"id":511,"episode_number":1,"name":"Return"}]}`)
+		_, _ = fmt.Fprint(w, `{"season_number":2,"poster_path":"/season-two.jpg","episodes":[{"id":511,"episode_number":1,"name":"Return","still_path":"/return.jpg"}]}`)
+	})
+	mux.HandleFunc("/images/w780/", func(w http.ResponseWriter, _ *http.Request) {
+		stillRequests.Add(1)
+		_, _ = w.Write(imageBytes)
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -665,8 +685,8 @@ func TestAutoMatchBackfillsEpisodesAddedAfterTheShowWasMatched(t *testing.T) {
 		placeholderImage(ctx, t, catalog, seasonID, "poster")
 		episodeID, err := catalog.UpsertItem(ctx, store.ItemInput{
 			LibraryID: libraryID, ParentID: &seasonID,
-			SourceKey:    fmt.Sprintf("show:Show:season:%d:episode:1-1", seasonNumber),
-			Kind:         "episode", Title: "Episode 1",
+			SourceKey: fmt.Sprintf("show:Show:season:%d:episode:1-1", seasonNumber),
+			Kind:      "episode", Title: "Episode 1",
 			SeasonNumber: seasonNumber, EpisodeNumber: 1, EpisodeEndNumber: 1, ScanID: scanID,
 		})
 		if err != nil {
@@ -710,16 +730,31 @@ func TestAutoMatchBackfillsEpisodesAddedAfterTheShowWasMatched(t *testing.T) {
 	if added.TMDBID != 502 || added.Title != "Second Contact" || added.Overview != "They meet again." {
 		t.Fatalf("episode added after the match was not backfilled: %+v", added)
 	}
-	if seasonRequests[1].Load() != 1 || seasonRequests[2].Load() != 0 {
-		t.Fatalf("season requests = season 1 %d, season 2 %d; only seasons missing an episode match should be fetched",
+	if seasonRequests[1].Load() != 1 || seasonRequests[2].Load() != 1 {
+		t.Fatalf("season requests = season 1 %d, season 2 %d; both have missing episode data",
 			seasonRequests[1].Load(), seasonRequests[2].Load())
+	}
+	if stillRequests.Load() != 3 {
+		t.Fatalf("episode still requests = %d, want 3", stillRequests.Load())
+	}
+	for key, wantPath := range map[string]string{
+		"s1e1": "/pilot.jpg", "s1e2": "/second.jpg", "s2e1": "/return.jpg",
+	} {
+		thumb, err := catalog.ItemImage(ctx, episodeIDs[key], "thumb")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if thumb.ProviderPath != wantPath || !strings.Contains(thumb.SourceURL, "/w780/") {
+			t.Fatalf("episode %s still = %+v", key, thumb)
+		}
 	}
 
 	if err := service.AutoMatch(ctx, showID); err != nil {
 		t.Fatal(err)
 	}
-	if seasonRequests[1].Load() != 1 {
-		t.Fatalf("a fully matched show fetched season 1 again: %d requests", seasonRequests[1].Load())
+	if seasonRequests[1].Load() != 1 || seasonRequests[2].Load() != 1 || stillRequests.Load() != 3 {
+		t.Fatalf("complete episode artwork was fetched again: seasons %d/%d, stills %d",
+			seasonRequests[1].Load(), seasonRequests[2].Load(), stillRequests.Load())
 	}
 }
 

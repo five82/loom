@@ -706,6 +706,15 @@ func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	backdropID, err := catalog.UpsertImage(ctx, Image{
+		ItemID: showID, Kind: "backdrop", Path: "/images/backdrop.jpg",
+		SourceURL: "https://example/backdrop.jpg", Provider: "tmdb",
+		ProviderPath: "/backdrop.jpg", Tag: "backdrop-tag",
+		ContentType: "image/jpeg", Width: 1920, Height: 1080, UpdatedAt: now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []int64{seasonID, episodeID} {
 		item, err := catalog.Item(ctx, id)
 		if err != nil {
@@ -747,6 +756,43 @@ func TestSeasonsAndEpisodesInheritImages(t *testing.T) {
 			t.Fatalf("item %d logo = %d/%q, want inherited %d/logo-tag", id,
 				item.LogoImageID, item.LogoImageTag, logoID)
 		}
+	}
+
+	if err := catalog.DeleteItemImage(ctx, showID, "thumb"); err != nil {
+		t.Fatal(err)
+	}
+	episode, err := catalog.Item(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.ThumbImageID != backdropID || episode.ThumbImageTag != "backdrop-tag" {
+		t.Fatalf("episode thumb = %d/%q, want show backdrop %d/backdrop-tag",
+			episode.ThumbImageID, episode.ThumbImageTag, backdropID)
+	}
+	season, err := catalog.Item(ctx, seasonID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if season.ThumbImageID != 0 {
+		t.Fatalf("season inherited backdrop as thumb: %+v", season)
+	}
+
+	episodeThumbID, err := catalog.UpsertImage(ctx, Image{
+		ItemID: episodeID, Kind: "thumb", Path: "/images/episode-thumb.jpg",
+		SourceURL: "https://example/episode-thumb.jpg", Provider: "tmdb",
+		ProviderPath: "/episode-thumb.jpg", Tag: "episode-thumb-tag",
+		ContentType: "image/jpeg", Width: 780, Height: 439, UpdatedAt: now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	episode, err = catalog.Item(ctx, episodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.ThumbImageID != episodeThumbID || episode.ThumbImageTag != "episode-thumb-tag" {
+		t.Fatalf("episode thumb = %d/%q, want direct %d/episode-thumb-tag",
+			episode.ThumbImageID, episode.ThumbImageTag, episodeThumbID)
 	}
 }
 

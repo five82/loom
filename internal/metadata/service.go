@@ -209,13 +209,14 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	}
 	identityChanged := item.TMDBID != 0 && item.TMDBID != details.ID
 	if identityChanged {
-		// Never carry a manual selection across two different titles. Clearing
-		// first also lets a later refresh retry if the new download fails.
+		// Never carry artwork across two different titles. Clearing first also
+		// lets a later refresh retry if a new download fails.
 		for _, kind := range []string{"poster", "backdrop", "logo", "thumb"} {
 			s.clearImage(ctx, itemID, kind)
 		}
 		if item.Kind == "show" {
 			s.clearSeasonPosters(ctx, itemID)
+			s.clearEpisodeThumbs(ctx, itemID)
 		}
 	}
 	s.saveDefaultImage(ctx, itemID, "poster", details.PosterPath)
@@ -405,10 +406,18 @@ func (s *Service) imageItem(ctx context.Context, itemID int64, kind string) (*st
 }
 
 func (s *Service) saveDefaultImage(ctx context.Context, itemID int64, kind, providerPath string) {
+	s.saveDefaultImageSize(ctx, itemID, kind, providerPath, "original")
+}
+
+func (s *Service) saveDefaultImageSize(
+	ctx context.Context, itemID int64, kind, providerPath, size string,
+) {
 	if providerPath == "" {
 		return
 	}
-	if _, err := s.downloadProviderImage(ctx, itemID, kind, providerPath, false, false); err != nil {
+	if _, err := s.downloadProviderImageSize(
+		ctx, itemID, kind, providerPath, size, false, false,
+	); err != nil {
 		s.logger.Warn("metadata image not saved", "item_id", itemID, "kind", kind, "error", err)
 	}
 }
@@ -490,6 +499,17 @@ func (s *Service) clearSeasonPosters(ctx context.Context, showID int64) {
 	}
 }
 
+func (s *Service) clearEpisodeThumbs(ctx context.Context, showID int64) {
+	episodes, err := s.store.EpisodesForShow(ctx, showID)
+	if err != nil {
+		s.logger.Warn("episode thumbs not cleared", "show_id", showID, "error", err)
+		return
+	}
+	for _, episode := range episodes {
+		s.clearImage(ctx, episode.ID, "thumb")
+	}
+}
+
 func (s *Service) clearImage(ctx context.Context, itemID int64, kind string) {
 	s.imageMu.Lock()
 	defer s.imageMu.Unlock()
@@ -513,6 +533,14 @@ func (s *Service) clearImage(ctx context.Context, itemID int64, kind string) {
 func (s *Service) downloadProviderImage(
 	ctx context.Context, itemID int64, kind, providerPath string, manuallySelected, force bool,
 ) (*store.Image, error) {
+	return s.downloadProviderImageSize(
+		ctx, itemID, kind, providerPath, "original", manuallySelected, force,
+	)
+}
+
+func (s *Service) downloadProviderImageSize(
+	ctx context.Context, itemID int64, kind, providerPath, size string, manuallySelected, force bool,
+) (*store.Image, error) {
 	s.imageMu.Lock()
 	defer s.imageMu.Unlock()
 
@@ -523,7 +551,7 @@ func (s *Service) downloadProviderImage(
 	if current != nil && current.ManuallySelected && !force {
 		return current, nil
 	}
-	imageURL := s.tmdb.ImageURL(providerPath)
+	imageURL := s.tmdb.ImageURLSize(providerPath, size)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create image request: %w", err)
@@ -600,9 +628,9 @@ func (s *Service) downloadProviderImage(
 	return s.store.ItemImage(ctx, itemID, kind)
 }
 
-// updateEpisodes writes TMDB episode metadata for a matched show. missingOnly
-// limits the work to episodes that do not have a match yet, so a scan that adds
-// an episode to an already-matched show only pays for the affected seasons.
+// updateEpisodes writes TMDB episode metadata and stills for a matched show.
+// missingOnly limits provider requests to seasons with missing metadata or a
+// missing direct episode thumb, so complete seasons cost nothing on later scans.
 func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64, missingOnly bool) {
 	localEpisodes, err := s.store.EpisodesForShow(ctx, showID)
 	if err != nil {
@@ -610,10 +638,17 @@ func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64, miss
 		return
 	}
 	bySeason := make(map[int][]store.Item)
+	needsThumb := make(map[int64]bool)
 	for _, episode := range localEpisodes {
-		if missingOnly && episode.TMDBID != 0 {
+		_, imageErr := s.store.ItemImage(ctx, episode.ID, "thumb")
+		missingThumb := errors.Is(imageErr, store.ErrNotFound)
+		if imageErr != nil && !missingThumb {
+			s.logger.Warn("episode thumb not checked", "item_id", episode.ID, "error", imageErr)
+		}
+		if missingOnly && episode.TMDBID != 0 && !missingThumb {
 			continue
 		}
+		needsThumb[episode.ID] = missingThumb
 		bySeason[episode.SeasonNumber] = append(bySeason[episode.SeasonNumber], episode)
 	}
 	for seasonNumber, items := range bySeason {
@@ -638,8 +673,17 @@ func (s *Service) updateEpisodes(ctx context.Context, showID, tmdbID int64, miss
 			if !ok {
 				continue
 			}
-			if err := s.store.UpdateMetadata(ctx, item.ID, metadata); err != nil {
-				s.logger.Warn("episode metadata not updated", "item_id", item.ID, "error", err)
+			if !missingOnly || item.TMDBID == 0 {
+				if err := s.store.UpdateMetadata(ctx, item.ID, metadata); err != nil {
+					s.logger.Warn("episode metadata not updated", "item_id", item.ID, "error", err)
+				}
+			}
+			if needsThumb[item.ID] {
+				// Episode stills are card artwork rather than full-screen backdrops.
+				// Keeping a w780 original bounds a large TV library's storage while
+				// leaving enough resolution for a high-density client thumbnail.
+				s.saveDefaultImageSize(ctx, item.ID, "thumb",
+					byNumber[item.EpisodeNumber].StillPath, "w780")
 			}
 		}
 	}

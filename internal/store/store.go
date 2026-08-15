@@ -768,12 +768,16 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
         (SELECT id FROM images WHERE item_id = i.id AND kind = 'thumb'),
         (SELECT id FROM images WHERE item_id = CASE
             WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
-            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'thumb'), 0),
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'thumb'),
+        (SELECT id FROM images WHERE item_id = CASE WHEN i.kind = 'episode' THEN
+            (SELECT parent_id FROM items WHERE id = i.parent_id) END AND kind = 'backdrop'), 0),
     COALESCE(
         (SELECT tag FROM images WHERE item_id = i.id AND kind = 'thumb'),
         (SELECT tag FROM images WHERE item_id = CASE
             WHEN i.kind = 'episode' THEN (SELECT parent_id FROM items WHERE id = i.parent_id)
-            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'thumb'), ''),
+            WHEN i.kind = 'season' THEN i.parent_id END AND kind = 'thumb'),
+        (SELECT tag FROM images WHERE item_id = CASE WHEN i.kind = 'episode' THEN
+            (SELECT parent_id FROM items WHERE id = i.parent_id) END AND kind = 'backdrop'), ''),
     COALESCE((SELECT id FROM media_files WHERE item_id = i.id), 0),
     COALESCE((SELECT size FROM media_files WHERE item_id = i.id), 0),
     COALESCE((SELECT mtime_ns FROM media_files WHERE item_id = i.id), 0),

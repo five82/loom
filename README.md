@@ -228,7 +228,8 @@ Only one manual or scheduled scan runs at a time. Scans are incremental:
 unchanged files are not probed again. New movies and shows are automatically
 matched when TMDB returns one exact title/year match, or when one exact match
 clearly dominates duplicate results by TMDB votes. Scans also backfill missing
-poster, backdrop, logo, and TV season poster artwork for existing TMDB matches.
+poster, backdrop, logo, TV season poster, and episode still artwork for existing
+TMDB matches.
 
 Review and correct uncertain matches from the CLI:
 
@@ -242,8 +243,8 @@ loom match ITEM_ID TMDB_ID
 A match stores provider metadata, including movie genres, in SQLite and
 downloads the default poster, backdrop, and TMDB's preferred logo into Loom's
 state directory when they are available. TV matches also populate metadata for
-local `SxxEyy` episodes and download season posters. Clients can browse TMDB
-poster, backdrop, and logo
+local `SxxEyy` episodes and download season posters and episode stills. Clients
+can browse TMDB poster, backdrop, and logo
 options, select another image, or reset the selection to TMDB's default or
 preferred option. Season items support the same selection flow for posters.
 Manual choices survive metadata refreshes and are reset only when the item is
@@ -427,13 +428,15 @@ Items expose poster, backdrop, logo, and thumb image IDs with content tags.
 Clients should include the tag query parameter when fetching an image; tagged
 responses are immutable and a changed selection produces a new tag. Seasons use
 their TMDB season poster when available and otherwise inherit the show poster.
-Episodes inherit the season poster; season and episode backdrops, logos, and
-thumbs inherit from the show. Image selection is unauthenticated under
-Loom's trusted-LAN model.
+Episodes inherit the season poster and use their TMDB still as the thumb. When
+an episode has no still it inherits the show's thumb, then the show's backdrop.
+Season thumbs and season and episode backdrops and logos inherit from the show.
+Image selection is unauthenticated under Loom's trusted-LAN model.
 
-Backdrops are textless TMDB backdrops; thumbs are the language-tagged TMDB
-backdrops that have title art baked in (the same source Jellyfin uses for its
-thumb artwork). The optional `width` query parameter serves a resized copy,
+Backdrops are textless TMDB backdrops. Movie and show thumbs are the
+language-tagged TMDB backdrops that have title art baked in (the same source
+Jellyfin uses for its thumb artwork); episode thumbs are TMDB stills. The
+optional `width` query parameter serves a resized copy,
 snapped up to fixed buckets of 240, 480, 960, or 1440 pixels so a phone never
 decodes a full-size original for a small card. Variants are resized once and
 cached on disk; requests at or above the original width return the original.
