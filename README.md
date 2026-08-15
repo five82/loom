@@ -311,6 +311,7 @@ The unauthenticated LAN API is rooted at `/api/v1`:
 GET  /api/v1/health
 GET  /api/v1/libraries
 GET  /api/v1/genres
+GET  /api/v1/collections
 GET  /api/v1/search?q=pilot
 GET  /api/v1/items?library=movies
 GET  /api/v1/items?library=shorts
@@ -399,6 +400,11 @@ The genres endpoint lists the genres represented in the available movie library,
 including an item count. Short films are browsed as their own top-level library
 rather than by genre, so they are excluded from these counts. Items include
 their genres and can be filtered by TMDB genre ID.
+
+The collections endpoint returns dynamic and hand-picked movie shelves with at
+least two available members. The HDR shelf is generated from video stream
+metadata and includes both HDR and Dolby Vision movies. Collections do not
+include TV shows or episodes.
 
 Search matches available movie, show, and episode titles and credited people
 case-insensitively at word starts. Exact and prefix title matches rank first. If

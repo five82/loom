@@ -800,7 +800,7 @@ func testCatalog(t *testing.T) (*store.Store, int64, int64, []byte) {
 	return catalog, itemID, mediaID, contents
 }
 
-func TestCollectionsServeOwnedMembersOnly(t *testing.T) {
+func TestCollectionsServeOwnedAndDynamicMembers(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := store.Open(filepath.Join(t.TempDir(), "loom.db"))
 	if err != nil {
@@ -811,9 +811,9 @@ func TestCollectionsServeOwnedMembersOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Three of the five Star Wars films, and one lone Nolan film. The Star Wars
-	// shelf is served without the two it is missing; the Nolan shelf is not
-	// served at all, because one movie under a heading is worse than none.
+	// Three of the five Star Wars films, and one lone Nolan film. Two Star Wars
+	// films are HDR, so both the dynamic HDR shelf and curated Star Wars shelf
+	// qualify. The lone Nolan shelf is omitted.
 	for _, movie := range []struct {
 		tmdbID      int64
 		title       string
@@ -837,6 +837,20 @@ func TestCollectionsServeOwnedMembersOnly(t *testing.T) {
 			ReleaseDate: movie.releaseDate,
 		}); err != nil {
 			t.Fatal(err)
+		}
+		if movie.tmdbID == 11 || movie.tmdbID == 1891 {
+			dynamicRange := "hdr"
+			if movie.tmdbID == 1891 {
+				dynamicRange = "dolby_vision"
+			}
+			if _, err := catalog.UpsertMedia(ctx, store.MediaFile{
+				ItemID: itemID, Path: "/movies/" + movie.title + ".mkv",
+				Size: 100, MTimeNS: 20, DurationMS: 600_000, LastSeenScanID: scanID,
+			}, []store.Stream{{
+				Index: 0, Kind: "video", DynamicRange: dynamicRange,
+			}}, nil); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	if err := catalog.FinishScan(ctx, libraryID, scanID, 4, 4, 0, nil); err != nil {
@@ -865,16 +879,22 @@ func TestCollectionsServeOwnedMembersOnly(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("collections status = %d", response.StatusCode)
 	}
-	if len(body.Items) != 1 {
-		t.Fatalf("expected only the Star Wars shelf: %+v", body.Items)
+	if len(body.Items) != 2 {
+		t.Fatalf("expected the HDR and Star Wars shelves: %+v", body.Items)
 	}
-	shelf := body.Items[0]
-	if shelf.Slug != "star-wars" || shelf.Title != "Star Wars" || len(shelf.Items) != 3 {
-		t.Fatalf("unexpected shelf: %+v", shelf)
+	hdr := body.Items[0]
+	if hdr.Slug != "hdr" || hdr.Title != "HDR" || len(hdr.Items) != 2 ||
+		hdr.Items[0].Title != "Star Wars" || hdr.Items[1].Title != "The Empire Strikes Back" {
+		t.Fatalf("unexpected HDR shelf: %+v", hdr)
+	}
+	starWars := body.Items[1]
+	if starWars.Slug != "star-wars" || starWars.Title != "Star Wars" || len(starWars.Items) != 3 {
+		t.Fatalf("unexpected Star Wars shelf: %+v", starWars)
 	}
 	// Release order, not the alphabetical order a grid would use.
-	if shelf.Items[0].Title != "Star Wars" || shelf.Items[1].Title != "The Empire Strikes Back" ||
-		shelf.Items[2].Title != "Return of the Jedi" {
-		t.Fatalf("shelf is not in release order: %+v", shelf.Items)
+	if starWars.Items[0].Title != "Star Wars" ||
+		starWars.Items[1].Title != "The Empire Strikes Back" ||
+		starWars.Items[2].Title != "Return of the Jedi" {
+		t.Fatalf("shelf is not in release order: %+v", starWars.Items)
 	}
 }

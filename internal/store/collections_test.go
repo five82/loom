@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -121,6 +122,91 @@ func TestItemsByTMDBID(t *testing.T) {
 
 	if empty, err := catalog.ItemsByTMDBID(ctx, nil); err != nil || empty != nil {
 		t.Fatalf("empty membership = %+v, %v", empty, err)
+	}
+}
+
+func TestItemsByVideoDynamicRangeAreMovieOnly(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	movieLibraryID, movieScanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrival := upsertMatchedMovie(t, catalog, movieLibraryID, movieScanID, 329865,
+		"Arrival", 2016, "2016-11-11")
+	dune := upsertMatchedMovie(t, catalog, movieLibraryID, movieScanID, 438631,
+		"Dune", 2021, "2021-10-22")
+	alien := upsertMatchedMovie(t, catalog, movieLibraryID, movieScanID, 348,
+		"Alien", 1979, "1979-05-25")
+	for _, media := range []struct {
+		itemID       int64
+		dynamicRange string
+	}{
+		{arrival, "hdr"},
+		{dune, "dolby_vision"},
+		{alien, "sdr"},
+	} {
+		if _, err := catalog.UpsertMedia(ctx, MediaFile{
+			ItemID: media.itemID, Path: fmt.Sprintf("/media/%s-%d.mkv", media.dynamicRange, media.itemID),
+			Size: 100, MTimeNS: 20, DurationMS: 600_000, LastSeenScanID: movieScanID,
+		}, []Stream{{Index: 0, Kind: "video", DynamicRange: media.dynamicRange}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := catalog.FinishScan(ctx, movieLibraryID, movieScanID, 3, 3, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Even an HDR episode does not promote its show into a movie collection.
+	tvLibraryID, tvScanID, err := catalog.StartScan(ctx, "tv", "/tv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	showID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tvLibraryID, SourceKey: "Show", Kind: "show", Title: "Show", ScanID: tvScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seasonID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tvLibraryID, ParentID: &showID, SourceKey: "Show/season-1",
+		Kind: "season", Title: "Season 1", SeasonNumber: 1, ScanID: tvScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	episodeID, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: tvLibraryID, ParentID: &seasonID, SourceKey: "Show/S01E01.mkv",
+		Kind: "episode", Title: "HDR Episode", SeasonNumber: 1, EpisodeNumber: 1,
+		ScanID: tvScanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertMedia(ctx, MediaFile{
+		ItemID: episodeID, Path: "/tv/Show/S01E01.mkv", Size: 100, MTimeNS: 20,
+		DurationMS: 600_000, LastSeenScanID: tvScanID,
+	}, []Stream{{Index: 0, Kind: "video", DynamicRange: "hdr"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, tvLibraryID, tvScanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := catalog.ItemsByVideoDynamicRange(ctx, []string{"hdr", "dolby_vision"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Title != "Arrival" || items[1].Title != "Dune" {
+		t.Fatalf("HDR movies = %+v, want Arrival and Dune", items)
+	}
+	if empty, err := catalog.ItemsByVideoDynamicRange(ctx, nil); err != nil || empty != nil {
+		t.Fatalf("empty dynamic ranges = %+v, %v", empty, err)
 	}
 }
 

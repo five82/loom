@@ -109,15 +109,24 @@ func (a *API) genres(w http.ResponseWriter, r *http.Request) {
 // collections serves every shelf with its members resolved, rather than a
 // summary plus a request per shelf, because a client drawing the collections
 // row needs the posters immediately and the whole payload is a few hundred
-// movies. A shelf is dropped when fewer than two of its members are owned: one
-// movie under a franchise heading is worse than leaving it in the grid.
+// movies. Dynamic shelves are resolved from the current catalog before the
+// hand-picked shelves. A shelf is dropped when fewer than two of its members
+// are owned: one movie under a heading is worse than leaving it in the grid.
 func (a *API) collections(w http.ResponseWriter, r *http.Request) {
 	type collection struct {
 		Slug  string       `json:"slug"`
 		Title string       `json:"title"`
 		Items []store.Item `json:"items"`
 	}
-	result := make([]collection, 0, len(collections.All))
+	result := make([]collection, 0, len(collections.All)+1)
+	hdr, err := a.store.ItemsByVideoDynamicRange(r.Context(), []string{"hdr", "dolby_vision"})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(hdr) >= 2 {
+		result = append(result, collection{Slug: "hdr", Title: "HDR", Items: hdr})
+	}
 	for _, defined := range collections.All {
 		items, err := a.store.ItemsByTMDBID(r.Context(), defined.TMDBIDs)
 		if err != nil {
