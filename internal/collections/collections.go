@@ -123,7 +123,7 @@ var All = []Collection{
 		70160,  // The Hunger Games (2012)
 		101299, // The Hunger Games: Catching Fire (2013)
 	}},
-	{Slug: "vacation", Title: "National Lampoon's Vacation", TMDBIDs: []int64{
+	{Slug: "vacation", Title: "Vacation", TMDBIDs: []int64{
 		11153, // National Lampoon's Vacation (1983)
 		5825,  // National Lampoon's Christmas Vacation (1989)
 	}},
