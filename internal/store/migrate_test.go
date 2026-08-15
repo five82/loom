@@ -62,6 +62,112 @@ PRAGMA user_version = 1;`); err != nil {
 	}
 }
 
+func TestMigrate12To13PreservesStateAndSeedsFeaturedRotation(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "loom.db")
+	catalog, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eligible, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Arrival", Kind: "movie", Title: "Arrival", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentary, err := catalog.UpsertItem(ctx, ItemInput{
+		LibraryID: libraryID, SourceKey: "Documentary", Kind: "movie", Title: "Documentary", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, eligible, MetadataUpdate{
+		TMDBID: 1, VoteAverage: 8.0, Genres: []Genre{{ID: 18, Name: "Drama"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, documentary, MetadataUpdate{
+		TMDBID: 2, VoteAverage: 9.0, Genres: []Genre{{ID: 99, Name: "Documentary"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertMedia(ctx, MediaFile{
+		ItemID: eligible, Path: "/movies/Arrival.mkv", Size: 1, MTimeNS: 1,
+		DurationMS: 600_000, LastSeenScanID: scanID,
+	}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 2, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetPlayed(ctx, eligible); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertImage(ctx, Image{
+		ItemID: eligible, Kind: "poster", Path: "/state/poster.jpg", SourceURL: "https://example/poster.jpg",
+		Tag: "manual", ContentType: "image/jpeg", ManuallySelected: true, UpdatedAt: now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Removing the version-13-only tables recreates the exact version-12 schema
+	// shape while retaining representative catalog, playback, and artwork rows.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+DROP TABLE featured_pick;
+DROP TABLE featured_rotation;
+PRAGMA user_version = 12;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Migrate(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 12 || result.To != 13 || result.Created {
+		t.Fatalf("migration result = %+v", result)
+	}
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrated.Close() }()
+	var playbackRows, manualArtwork, rotationRows int
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM playback_state`).Scan(&playbackRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM images WHERE manually_selected = 1`).Scan(&manualArtwork); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM featured_rotation`).Scan(&rotationRows); err != nil {
+		t.Fatal(err)
+	}
+	if playbackRows != 1 || manualArtwork != 1 || rotationRows != 1 {
+		t.Fatalf("migrated rows = playback %d, manual artwork %d, rotation %d",
+			playbackRows, manualArtwork, rotationRows)
+	}
+	var rotatedID int64
+	if err := migrated.db.QueryRow(`SELECT item_id FROM featured_rotation`).Scan(&rotatedID); err != nil {
+		t.Fatal(err)
+	}
+	if rotatedID != eligible {
+		t.Fatalf("seeded featured item = %d, want eligible movie %d", rotatedID, eligible)
+	}
+}
+
 func TestFailedMigrationRollsBackSchemaAndVersion(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "loom.db"))
 	if err != nil {

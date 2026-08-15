@@ -312,6 +312,7 @@ GET  /api/v1/health
 GET  /api/v1/libraries
 GET  /api/v1/genres
 GET  /api/v1/collections
+GET  /api/v1/featured-pick
 GET  /api/v1/search?q=pilot
 GET  /api/v1/items?library=movies
 GET  /api/v1/items?library=shorts
@@ -406,6 +407,13 @@ least two available members. New Releases contains movies released within the
 last 18 months, newest first. The alphabetical HDR shelf is generated from
 video stream metadata and includes both HDR and Dolby Vision movies. Collections do not
 include TV shows or episodes.
+
+The featured-pick endpoint returns one movie rated at least 7.5 by TMDB, excluding
+documentaries, along with the UTC instants at which its active period starts and
+ends. The pick changes at 6am and 6pm in the server's local time. Loom presents
+every eligible movie in random order before repeating one. Successful scans add
+and remove rotation members without changing the active pick, except when that
+movie has been removed from the library.
 
 Search matches available movie, show, and episode titles and credited people
 case-insensitively at word starts. Exact and prefix title matches rank first. If

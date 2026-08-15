@@ -2,6 +2,7 @@ package daemonrun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -114,10 +115,14 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var workers sync.WaitGroup
-	workers.Add(1)
+	workers.Add(2)
 	go func() {
 		defer workers.Done()
 		scans.Run(runCtx)
+	}()
+	go func() {
+		defer workers.Done()
+		runFeaturedPicks(runCtx, catalog, logger)
 	}()
 
 	serveErrors := make(chan error, 2)
@@ -154,6 +159,28 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	logger.Info("daemon stopped")
 	return runErr
+}
+
+// runFeaturedPicks initializes the current period at startup and wakes at each
+// server-local 6am and 6pm boundary. The API performs the same durable check as
+// a fallback, so a request racing startup or timer scheduling sees one pick.
+func runFeaturedPicks(ctx context.Context, catalog *store.Store, logger *slog.Logger) {
+	for {
+		now := time.Now()
+		if _, err := catalog.FeaturedPickAt(ctx, now); err != nil &&
+			!errors.Is(err, store.ErrNotFound) && !errors.Is(err, context.Canceled) {
+			logger.Error("featured pick rotation failed", "error", err)
+		}
+		timer := time.NewTimer(time.Until(store.NextFeaturedPickTime(now)))
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 func tcpListenAddresses(listener net.Listener, configuredBind string) []string {

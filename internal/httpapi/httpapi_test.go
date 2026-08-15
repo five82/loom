@@ -800,6 +800,51 @@ func testCatalog(t *testing.T) (*store.Store, int64, int64, []byte) {
 	return catalog, itemID, mediaID, contents
 }
 
+func TestFeaturedPickAPI(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := store.Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID, err := catalog.UpsertItem(ctx, store.ItemInput{
+		LibraryID: libraryID, SourceKey: "Arrival", Kind: "movie", Title: "Arrival", ScanID: scanID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, itemID, store.MetadataUpdate{
+		TMDBID: 329865, Title: "Arrival", VoteAverage: 7.6,
+		Genres: []store.Genre{{ID: 878, Name: "Science Fiction"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 1, 1, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	server := httptest.NewServer(api.PublicHandler())
+	defer server.Close()
+	response, err := http.Get(server.URL + "/api/v1/featured-pick")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var pick store.FeaturedPick
+	if err := json.NewDecoder(response.Body).Decode(&pick); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || pick.Item.ID != itemID ||
+		pick.StartsAt == "" || pick.EndsAt == "" {
+		t.Fatalf("featured status=%d pick=%+v", response.StatusCode, pick)
+	}
+}
+
 func TestCollectionsServeOwnedAndDynamicMembers(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := store.Open(filepath.Join(t.TempDir(), "loom.db"))

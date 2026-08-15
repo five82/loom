@@ -66,7 +66,7 @@ func Backup(ctx context.Context, source, destination string) error {
 	return nil
 }
 
-const currentSchemaVersion = 12
+const currentSchemaVersion = 13
 
 func (s *Store) ensureSchema() error {
 	version, err := schemaVersion(s.db)
@@ -217,6 +217,15 @@ CREATE TABLE playback_state (
     played INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE featured_rotation (
+    item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    shown INTEGER NOT NULL DEFAULT 0 CHECK (shown IN (0, 1))
+);
+CREATE TABLE featured_pick (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    period_started_at TEXT NOT NULL
+);
 `
 	tx, err := db.Begin()
 	if err != nil {
@@ -325,6 +334,18 @@ WHERE library_id = ?`, scanID, libraryID); err != nil {
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE libraries SET last_scan_id = ? WHERE id = ?`, scanID, libraryID); err != nil {
 			return fmt.Errorf("record library scan: %w", err)
+		}
+		var libraryKind string
+		if err := tx.QueryRowContext(ctx, `SELECT kind FROM libraries WHERE id = ?`, libraryID).Scan(&libraryKind); err != nil {
+			return fmt.Errorf("read scanned library kind: %w", err)
+		}
+		if libraryKind == "movies" {
+			if err := reconcileFeaturedRotation(ctx, tx); err != nil {
+				return err
+			}
+			if err := replaceUnavailableFeaturedPick(ctx, tx); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `

@@ -45,6 +45,7 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	api.public.HandleFunc("GET /api/v1/libraries", api.libraries)
 	api.public.HandleFunc("GET /api/v1/genres", api.genres)
 	api.public.HandleFunc("GET /api/v1/collections", api.collections)
+	api.public.HandleFunc("GET /api/v1/featured-pick", api.featuredPick)
 	api.public.HandleFunc("GET /api/v1/search", api.search)
 	api.public.HandleFunc("GET /api/v1/items", api.items)
 	api.public.HandleFunc("GET /api/v1/items/{id}", api.item)
@@ -149,6 +150,19 @@ func (a *API) collections(w http.ResponseWriter, r *http.Request) {
 		result = append(result, collection{Slug: defined.Slug, Title: defined.Title, Items: items})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+}
+
+func (a *API) featuredPick(w http.ResponseWriter, r *http.Request) {
+	pick, err := a.store.FeaturedPickAt(r.Context(), time.Now())
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "featured pick unavailable")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, pick)
 }
 
 func (a *API) search(w http.ResponseWriter, r *http.Request) {

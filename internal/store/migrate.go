@@ -19,7 +19,29 @@ type schemaMigration struct {
 
 // Version 12 is the migration baseline. Fresh databases are created directly
 // at currentSchemaVersion; append each future released upgrade to this list.
-var schemaMigrations = []schemaMigration{}
+var schemaMigrations = []schemaMigration{{
+	from: 12,
+	to:   13,
+	sql: `
+CREATE TABLE featured_rotation (
+    item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+    shown INTEGER NOT NULL DEFAULT 0 CHECK (shown IN (0, 1))
+);
+CREATE TABLE featured_pick (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    period_started_at TEXT NOT NULL
+);
+INSERT INTO featured_rotation(item_id, shown)
+SELECT i.id, 0
+FROM items i JOIN libraries l ON l.id = i.library_id
+WHERE i.available = 1 AND i.kind = 'movie' AND l.kind = 'movies'
+    AND i.vote_average >= 7.5
+    AND NOT EXISTS (
+        SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
+        WHERE ig.item_id = i.id AND g.name = 'Documentary' COLLATE NOCASE
+    );`,
+}}
 
 // MigrationResult describes the schema change made by Migrate.
 type MigrationResult struct {

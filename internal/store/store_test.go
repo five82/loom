@@ -760,8 +760,8 @@ func TestCurrentSchemaCreatedAndAccepted(t *testing.T) {
 	if err := catalog.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 12 {
-		t.Fatalf("created schema version = %d, want 12", version)
+	if version != 13 {
+		t.Fatalf("created schema version = %d, want 13", version)
 	}
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)
