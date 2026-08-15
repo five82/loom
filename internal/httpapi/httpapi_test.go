@@ -811,9 +811,10 @@ func TestCollectionsServeOwnedAndDynamicMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Three of the five Star Wars films, and one lone Nolan film. Two Star Wars
-	// films are HDR, so both the dynamic HDR shelf and curated Star Wars shelf
-	// qualify. The lone Nolan shelf is omitted.
+	// Three of the five Star Wars films, one lone Nolan film, and two recent
+	// films. Both dynamic shelves and the curated Star Wars shelf qualify. The
+	// lone Nolan shelf is omitted.
+	today := time.Now().UTC()
 	for _, movie := range []struct {
 		tmdbID      int64
 		title       string
@@ -824,6 +825,8 @@ func TestCollectionsServeOwnedAndDynamicMembers(t *testing.T) {
 		{11, "Star Wars", 1977, "1977-05-25"},
 		{1891, "The Empire Strikes Back", 1980, "1980-05-20"},
 		{27205, "Inception", 2010, "2010-07-15"},
+		{900001, "Recent One", today.Year(), today.AddDate(0, -1, 0).Format(time.DateOnly)},
+		{900002, "Recent Two", today.Year() - 1, today.AddDate(0, -12, 0).Format(time.DateOnly)},
 	} {
 		itemID, err := catalog.UpsertItem(ctx, store.ItemInput{
 			LibraryID: libraryID, SourceKey: movie.title, Kind: "movie",
@@ -853,7 +856,7 @@ func TestCollectionsServeOwnedAndDynamicMembers(t *testing.T) {
 			}
 		}
 	}
-	if err := catalog.FinishScan(ctx, libraryID, scanID, 4, 4, 0, nil); err != nil {
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 6, 6, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -879,15 +882,21 @@ func TestCollectionsServeOwnedAndDynamicMembers(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("collections status = %d", response.StatusCode)
 	}
-	if len(body.Items) != 2 {
-		t.Fatalf("expected the HDR and Star Wars shelves: %+v", body.Items)
+	if len(body.Items) != 3 {
+		t.Fatalf("expected New Releases, HDR, and Star Wars shelves: %+v", body.Items)
 	}
-	hdr := body.Items[0]
+	newReleases := body.Items[0]
+	if newReleases.Slug != "new-releases" || newReleases.Title != "New Releases" ||
+		len(newReleases.Items) != 2 || newReleases.Items[0].Title != "Recent One" ||
+		newReleases.Items[1].Title != "Recent Two" {
+		t.Fatalf("unexpected New Releases shelf: %+v", newReleases)
+	}
+	hdr := body.Items[1]
 	if hdr.Slug != "hdr" || hdr.Title != "HDR" || len(hdr.Items) != 2 ||
-		hdr.Items[0].Title != "Star Wars" || hdr.Items[1].Title != "The Empire Strikes Back" {
+		hdr.Items[0].Title != "The Empire Strikes Back" || hdr.Items[1].Title != "Star Wars" {
 		t.Fatalf("unexpected HDR shelf: %+v", hdr)
 	}
-	starWars := body.Items[1]
+	starWars := body.Items[2]
 	if starWars.Slug != "star-wars" || starWars.Title != "Star Wars" || len(starWars.Items) != 3 {
 		t.Fatalf("unexpected Star Wars shelf: %+v", starWars)
 	}

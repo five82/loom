@@ -402,8 +402,9 @@ rather than by genre, so they are excluded from these counts. Items include
 their genres and can be filtered by TMDB genre ID.
 
 The collections endpoint returns dynamic and hand-picked movie shelves with at
-least two available members. The HDR shelf is generated from video stream
-metadata and includes both HDR and Dolby Vision movies. Collections do not
+least two available members. New Releases contains movies released within the
+last 18 months, newest first. The alphabetical HDR shelf is generated from
+video stream metadata and includes both HDR and Dolby Vision movies. Collections do not
 include TV shows or episodes.
 
 Search matches available movie, show, and episode titles and credited people

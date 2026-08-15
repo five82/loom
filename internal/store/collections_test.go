@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestItemsByTMDBID(t *testing.T) {
@@ -122,6 +123,48 @@ func TestItemsByTMDBID(t *testing.T) {
 
 	if empty, err := catalog.ItemsByTMDBID(ctx, nil); err != nil || empty != nil {
 		t.Fatalf("empty membership = %+v, %v", empty, err)
+	}
+}
+
+func TestItemsReleasedBetween(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, movie := range []struct {
+		title       string
+		releaseDate string
+	}{
+		{"Before", "2023-12-31"},
+		{"First Day", "2024-01-01"},
+		{"Last Day", "2025-07-01"},
+		{"After", "2025-07-02"},
+	} {
+		upsertMatchedMovie(t, catalog, libraryID, scanID, int64(500000+index),
+			movie.title, 2024, movie.releaseDate)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 4, 4, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Date(2024, time.January, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2025, time.July, 1, 0, 0, 0, 0, time.UTC)
+	items, err := catalog.ItemsReleasedBetween(ctx, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Title != "Last Day" || items[1].Title != "First Day" {
+		t.Fatalf("recent releases = %+v, want Last Day and First Day", items)
+	}
+	if empty, err := catalog.ItemsReleasedBetween(ctx, end, start); err != nil || empty != nil {
+		t.Fatalf("reversed release range = %+v, %v", empty, err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ItemsByTMDBID returns the available movies carrying the given TMDB ids, in
@@ -20,12 +21,13 @@ func (s *Store) ItemsByTMDBID(ctx context.Context, tmdbIDs []int64) ([]Item, err
 		placeholders[index] = "?"
 		args[index] = tmdbID
 	}
-	return s.collectionItems(ctx, "i.tmdb_id IN ("+strings.Join(placeholders, ",")+")", args)
+	return s.collectionItems(ctx, "i.tmdb_id IN ("+strings.Join(placeholders, ",")+")", args,
+		releaseOrder)
 }
 
 // ItemsByVideoDynamicRange returns available movies whose video stream has one
-// of the requested scanner classifications. A movie appears only once even if
-// its file has multiple matching video streams.
+// of the requested scanner classifications, in alphabetical order. A movie
+// appears only once even if its file has multiple matching video streams.
 func (s *Store) ItemsByVideoDynamicRange(ctx context.Context, dynamicRanges []string) ([]Item, error) {
 	if len(dynamicRanges) == 0 {
 		return nil, nil
@@ -42,10 +44,32 @@ func (s *Store) ItemsByVideoDynamicRange(ctx context.Context, dynamicRanges []st
         WHERE m.item_id = i.id AND stream.kind = 'video'
             AND stream.dynamic_range IN (` + strings.Join(placeholders, ",") + `)
     )`
-	return s.collectionItems(ctx, predicate, args)
+	return s.collectionItems(ctx, predicate, args, alphabeticalOrder)
 }
 
-func (s *Store) collectionItems(ctx context.Context, predicate string, args []any) ([]Item, error) {
+// ItemsReleasedBetween returns available movies released inside the inclusive
+// date range, newest first.
+func (s *Store) ItemsReleasedBetween(ctx context.Context, start, end time.Time) ([]Item, error) {
+	if end.Before(start) {
+		return nil, nil
+	}
+	return s.collectionItems(ctx, "i.release_date >= ? AND i.release_date <= ?",
+		[]any{start.Format(time.DateOnly), end.Format(time.DateOnly)}, newestReleaseOrder)
+}
+
+const releaseOrder = `CASE WHEN i.release_date = '' THEN 1 ELSE 0 END, i.release_date,
+    i.year, i.title COLLATE NOCASE, i.id`
+
+const alphabeticalOrder = `CASE
+        WHEN substr(i.title, 1, 4) = 'the ' COLLATE NOCASE THEN substr(i.title, 5)
+        WHEN substr(i.title, 1, 3) = 'an ' COLLATE NOCASE THEN substr(i.title, 4)
+        WHEN substr(i.title, 1, 2) = 'a ' COLLATE NOCASE THEN substr(i.title, 3)
+        ELSE i.title
+    END COLLATE NOCASE, i.title COLLATE NOCASE, i.id`
+
+const newestReleaseOrder = `i.release_date DESC, i.title COLLATE NOCASE, i.id`
+
+func (s *Store) collectionItems(ctx context.Context, predicate string, args []any, orderBy string) ([]Item, error) {
 	// Collections contain movies from both the movies and shorts libraries. TV
 	// episodes stay out because their posters and playback semantics do not fit a
 	// movie shelf. Playback state rides along so clients can draw watched markers
@@ -56,8 +80,7 @@ func (s *Store) collectionItems(ctx context.Context, predicate string, args []an
 FROM items i
 LEFT JOIN playback_state p ON p.item_id = i.id
 WHERE i.available = 1 AND i.kind = 'movie' AND `+predicate+`
-ORDER BY CASE WHEN i.release_date = '' THEN 1 ELSE 0 END, i.release_date,
-    i.year, i.title COLLATE NOCASE, i.id`, args...)
+ORDER BY `+orderBy, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list collection items: %w", err)
 	}

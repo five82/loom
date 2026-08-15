@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/five82/loom/internal/collections"
 	"github.com/five82/loom/internal/images"
@@ -118,7 +119,16 @@ func (a *API) collections(w http.ResponseWriter, r *http.Request) {
 		Title string       `json:"title"`
 		Items []store.Item `json:"items"`
 	}
-	result := make([]collection, 0, len(collections.All)+1)
+	result := make([]collection, 0, len(collections.All)+2)
+	today := time.Now().UTC()
+	newReleases, err := a.store.ItemsReleasedBetween(r.Context(), today.AddDate(0, -18, 0), today)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(newReleases) >= 2 {
+		result = append(result, collection{Slug: "new-releases", Title: "New Releases", Items: newReleases})
+	}
 	hdr, err := a.store.ItemsByVideoDynamicRange(r.Context(), []string{"hdr", "dolby_vision"})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
