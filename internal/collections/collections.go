@@ -50,6 +50,7 @@ var All = []Collection{
 		10764,  // Quantum of Solace (2008)
 		37724,  // Skyfall (2012)
 		206647, // Spectre (2015)
+		370172, // No Time to Die (2021)
 	}},
 	{Slug: "x-men", Title: "X-Men", TMDBIDs: []int64{
 		36657,  // X-Men (2000)
@@ -98,8 +99,9 @@ var All = []Collection{
 		240, // The Godfather Part II (1974)
 	}},
 	{Slug: "kill-bill", Title: "Kill Bill", TMDBIDs: []int64{
-		24,  // Kill Bill: Vol. 1 (2003)
-		393, // Kill Bill: Vol. 2 (2004)
+		24,     // Kill Bill: Vol. 1 (2003)
+		393,    // Kill Bill: Vol. 2 (2004)
+		414419, // Kill Bill: The Whole Bloody Affair (2011)
 	}},
 	{Slug: "deadpool", Title: "Deadpool", TMDBIDs: []int64{
 		293660, // Deadpool (2016)
@@ -170,6 +172,7 @@ var All = []Collection{
 		184,    // Jackie Brown (1997)
 		24,     // Kill Bill: Vol. 1 (2003)
 		393,    // Kill Bill: Vol. 2 (2004)
+		414419, // Kill Bill: The Whole Bloody Affair (2011)
 		68718,  // Django Unchained (2012)
 		273248, // The Hateful Eight (2015)
 		466272, // Once Upon a Time... in Hollywood (2019)
