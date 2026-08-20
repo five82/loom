@@ -551,6 +551,7 @@ type Stream struct {
 	Title         string `json:"title,omitempty"`
 	Width         int    `json:"width,omitempty"`
 	Height        int    `json:"height,omitempty"`
+	Resolution    string `json:"resolution,omitempty"`
 	Channels      int    `json:"channels,omitempty"`
 	ChannelLayout string `json:"channel_layout,omitempty"`
 	DynamicRange  string `json:"dynamic_range,omitempty"`
@@ -1293,9 +1294,27 @@ FROM media_streams WHERE media_file_id = ? ORDER BY stream_index`, mediaID)
 			&stream.IsForced); err != nil {
 			return nil, fmt.Errorf("scan media stream: %w", err)
 		}
+		if stream.Kind == "video" {
+			stream.Resolution = videoResolution(stream.Width, stream.Height)
+		}
 		streams = append(streams, stream)
 	}
 	return streams, rows.Err()
+}
+
+func videoResolution(width, height int) string {
+	switch {
+	case width >= 3200 || height >= 1800:
+		return "4k"
+	case width >= 1800 || height >= 1000:
+		return "1080p"
+	case width >= 1200 || height >= 700:
+		return "720p"
+	case width > 0 && height > 0:
+		return "sd"
+	default:
+		return ""
+	}
 }
 
 func (s *Store) chapters(ctx context.Context, mediaID int64) ([]Chapter, error) {

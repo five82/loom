@@ -11,6 +11,31 @@ import (
 	"testing"
 )
 
+func TestVideoResolution(t *testing.T) {
+	tests := []struct {
+		name          string
+		width, height int
+		want          string
+	}{
+		{name: "full 4K", width: 3840, height: 2160, want: "4k"},
+		{name: "letterboxed 4K", width: 3840, height: 1604, want: "4k"},
+		{name: "pillarboxed 4K", width: 2880, height: 2160, want: "4k"},
+		{name: "full 1080p", width: 1920, height: 1080, want: "1080p"},
+		{name: "pillarboxed 1080p", width: 1792, height: 1080, want: "1080p"},
+		{name: "letterboxed 1080p", width: 1920, height: 800, want: "1080p"},
+		{name: "720p", width: 1280, height: 720, want: "720p"},
+		{name: "SD", width: 720, height: 576, want: "sd"},
+		{name: "missing dimensions", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := videoResolution(test.width, test.height); got != test.want {
+				t.Fatalf("videoResolution(%d, %d) = %q, want %q", test.width, test.height, got, test.want)
+			}
+		})
+	}
+}
+
 func TestCatalogAndProgress(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
@@ -58,9 +83,9 @@ func TestCatalogAndProgress(t *testing.T) {
 		t.Fatalf("unexpected item: %+v", item)
 	}
 	video, audio := item.Media.Streams[0], item.Media.Streams[1]
-	if video.Profile != "Main 10" || video.DynamicRange != "hdr" ||
+	if video.Profile != "Main 10" || video.DynamicRange != "hdr" || video.Resolution != "4k" ||
 		audio.ChannelLayout != "7.1" {
-		t.Fatalf("technical metadata was not persisted: %+v", item.Media.Streams)
+		t.Fatalf("unexpected technical metadata: %+v", item.Media.Streams)
 	}
 	if len(item.Media.Chapters) != 2 || item.Media.Chapters[0].Title != "Opening" ||
 		item.Media.Chapters[1].StartMS != 264_264 {
