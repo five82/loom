@@ -726,6 +726,11 @@ type Item struct {
 	// zero for kinds that have no episodes beneath them.
 	EpisodeCount   int `json:"episode_count,omitempty"`
 	UnwatchedCount int `json:"unwatched_count,omitempty"`
+	// SeriesTitle names the show an episode belongs to, filled in only by the
+	// listings that hand episodes to a client outside their show hierarchy:
+	// search, Continue Watching, and Next Up. Empty everywhere else, and for
+	// everything that is not an episode.
+	SeriesTitle string `json:"series_title,omitempty"`
 }
 
 const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
@@ -798,6 +803,13 @@ const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i
 const episodesBelow = `(e.parent_id = i.id
     OR e.parent_id IN (SELECT s.id FROM items s WHERE s.parent_id = i.id AND s.kind = 'season'))`
 
+// seriesJoin reaches the season and show above an episode row `i`, for the
+// listings that hand episodes to a client outside their show hierarchy. Both
+// joins miss for every other kind, leaving the titles NULL.
+const seriesJoin = `
+LEFT JOIN items season ON i.kind = 'episode' AND season.id = i.parent_id
+LEFT JOIN items series ON series.id = season.parent_id`
+
 type ListOptions struct {
 	LibraryKind string
 	ParentID    *int64
@@ -808,10 +820,9 @@ type ListOptions struct {
 	Offset      int
 }
 
-// SearchResult includes the hierarchy needed to identify an episode outside its show.
+// SearchResult adds the season an episode sits in; the show is on Item itself.
 type SearchResult struct {
 	Item
-	SeriesTitle string `json:"series_title,omitempty"`
 	SeasonTitle string `json:"season_title,omitempty"`
 }
 
@@ -1004,9 +1015,7 @@ func (s *Store) searchItems(
 	args = append(args, limit, offset)
 	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`,
     COALESCE(series.title, ''), COALESCE(season.title, '')
-FROM items i
-LEFT JOIN items season ON i.kind = 'episode' AND season.id = i.parent_id
-LEFT JOIN items series ON series.id = season.parent_id
+FROM items i`+seriesJoin+`
 WHERE i.available = 1 AND i.kind IN ('movie', 'show', 'episode')
     AND (`+matcher+`(i.title, ?)
         OR i.id IN (SELECT c.item_id FROM item_credits c JOIN people p ON p.id = c.person_id
@@ -1023,10 +1032,12 @@ LIMIT ? OFFSET ?`, args...)
 	results := make([]SearchResult, 0)
 	for rows.Next() {
 		var result SearchResult
-		item, err := scanItemFields(rows, &result.SeriesTitle, &result.SeasonTitle)
+		var seriesTitle string
+		item, err := scanItemFields(rows, &seriesTitle, &result.SeasonTitle)
 		if err != nil {
 			return nil, err
 		}
+		item.SeriesTitle = seriesTitle
 		result.Item = item
 		results = append(results, result)
 	}
@@ -1490,8 +1501,8 @@ func (s *Store) ContinueWatching(ctx context.Context, limit int) ([]Item, error)
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`,
-    p.position_ms, p.duration_ms, p.played, p.updated_at
-FROM playback_state p JOIN items i ON i.id = p.item_id
+    p.position_ms, p.duration_ms, p.played, p.updated_at, COALESCE(series.title, '')
+FROM playback_state p JOIN items i ON i.id = p.item_id`+seriesJoin+`
 WHERE i.available = 1 AND `+resumablePlayback+`
 ORDER BY p.updated_at DESC LIMIT ?`, limit)
 	if err != nil {
@@ -1502,12 +1513,13 @@ ORDER BY p.updated_at DESC LIMIT ?`, limit)
 	for rows.Next() {
 		var position, duration int64
 		var played bool
-		var updated string
-		item, err := scanItemFields(rows, &position, &duration, &played, &updated)
+		var updated, seriesTitle string
+		item, err := scanItemFields(rows, &position, &duration, &played, &updated, &seriesTitle)
 		if err != nil {
 			return nil, fmt.Errorf("scan continue-watching item: %w", err)
 		}
 		item.Progress = makeProgress(position, duration, played, updated)
+		item.SeriesTitle = seriesTitle
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -1560,8 +1572,8 @@ candidates AS (
         AND NOT EXISTS (
             SELECT 1 FROM playback_state p WHERE p.item_id = episode.id AND p.played = 1)
 )
-SELECT `+itemColumns+`
-FROM candidates c JOIN items i ON i.id = c.episode_id
+SELECT `+itemColumns+`, COALESCE(series.title, '')
+FROM candidates c JOIN items i ON i.id = c.episode_id`+seriesJoin+`
 WHERE c.position = 1
 ORDER BY c.last_watched DESC, i.id LIMIT ?`, limit)
 	if err != nil {
@@ -1570,10 +1582,12 @@ ORDER BY c.last_watched DESC, i.id LIMIT ?`, limit)
 	defer func() { _ = rows.Close() }()
 	var result []Item
 	for rows.Next() {
-		item, err := scanItem(rows)
+		var seriesTitle string
+		item, err := scanItemFields(rows, &seriesTitle)
 		if err != nil {
 			return nil, fmt.Errorf("scan next-up item: %w", err)
 		}
+		item.SeriesTitle = seriesTitle
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {

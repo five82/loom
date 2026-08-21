@@ -424,6 +424,10 @@ insertion, deletion, substitution, or adjacent transposition; the response's
 episode results include `series_title` and `season_title` for display outside
 their hierarchy.
 
+Continue Watching and Next Up list episodes away from their show as well, so
+their episode entries carry `series_title` too. An episode's own title rarely
+names the show, and the artwork on those rows is the episode's still.
+
 Items expose poster, backdrop, logo, and thumb image IDs with content tags.
 Clients should include the tag query parameter when fetching an image; tagged
 responses are immutable and a changed selection produces a new tag. Seasons use

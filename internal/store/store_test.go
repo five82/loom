@@ -116,6 +116,10 @@ func TestCatalogAndProgress(t *testing.T) {
 	if len(continuing) != 1 || continuing[0].Progress == nil || continuing[0].Progress.ResumePositionMS != 60_000 {
 		t.Fatalf("unexpected continue-watching items: %+v", continuing)
 	}
+	// A movie is its own title; only episodes name a show above them.
+	if continuing[0].SeriesTitle != "" {
+		t.Fatalf("continue watching gave a movie a series title: %q", continuing[0].SeriesTitle)
+	}
 	progress, err = catalog.SetProgress(ctx, itemID, 540_000, 600_000)
 	if err != nil {
 		t.Fatal(err)
@@ -1159,9 +1163,23 @@ func TestNextUp(t *testing.T) {
 			t.Fatalf("next up[%d] = %d (%s), want %d", index, items[index].ID, items[index].Title, id)
 		}
 	}
+	// The episode title alone does not say which show this is, so the row has
+	// to carry the show name across the two levels between them.
+	wantShows := []string{"Office", "Gap", "Glance"}
+	for index, title := range wantShows {
+		if items[index].SeriesTitle != title {
+			t.Fatalf("next up[%d] series title = %q, want %q", index, items[index].SeriesTitle, title)
+		}
+	}
 
 	// Finishing the mid-watch episode releases the show from Continue Watching,
 	// so Next Up has to take over rather than let it fall off the home screen.
+	if continuing, err = catalog.ContinueWatching(ctx, 20); err != nil {
+		t.Fatal(err)
+	} else if len(continuing) != 1 || continuing[0].SeriesTitle != "Partial" {
+		t.Fatalf("continue watching did not name the show: %+v", continuing)
+	}
+
 	watch(partialE1, 1_750_000)
 	items, err = catalog.NextUp(ctx, 20)
 	if err != nil {
