@@ -558,13 +558,22 @@ func TestImageTagCaching(t *testing.T) {
 		t.Fatalf("conditional image status = %d", response.StatusCode)
 	}
 
+	// A stale tag still serves the current image (clients hold old tags in
+	// their item rows after an artwork change), just without immutable caching.
 	response, err = http.Get(imageURL + "?tag=old-tag")
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, readErr = io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("stale image tag status = %d", response.StatusCode)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Equal(body, contents) ||
+		strings.Contains(response.Header.Get("Cache-Control"), "immutable") ||
+		!strings.Contains(response.Header.Get("Cache-Control"), "must-revalidate") {
+		t.Fatalf("stale image tag status=%d headers=%v body=%q",
+			response.StatusCode, response.Header, body)
 	}
 
 	response, err = http.Get(server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10))

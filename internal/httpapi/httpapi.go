@@ -542,11 +542,13 @@ func (a *API) image(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "image file is unavailable")
 		return
 	}
+	// A stale tag is not an error: clients hold item rows with the tag baked
+	// into artwork URLs, and after an artwork change a client that hasn't
+	// refetched its rows still asks with the old tag. Answering 404 left
+	// those clients rendering blank artwork, so serve the current image
+	// instead; the tag only decides cacheability below (matching tag is
+	// immutable, anything else must revalidate).
 	requestedTag := r.URL.Query().Get("tag")
-	if requestedTag != "" && requestedTag != image.Tag {
-		writeError(w, http.StatusNotFound, "image version not found")
-		return
-	}
 	contentType := image.ContentType
 	if contentType == "" {
 		contentType = mime.TypeByExtension(filepath.Ext(image.Path))
