@@ -1,6 +1,6 @@
 module github.com/five82/loom
 
-go 1.26.6
+go 1.27.0
 
 require (
 	github.com/gofrs/flock v0.13.0
