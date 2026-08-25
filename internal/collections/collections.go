@@ -52,6 +52,13 @@ var All = []Collection{
 		206647, // Spectre (2015)
 		370172, // No Time to Die (2021)
 	}},
+	{Slug: "jason-bourne", Title: "Jason Bourne", TMDBIDs: []int64{
+		2501,   // The Bourne Identity (2002)
+		2502,   // The Bourne Supremacy (2004)
+		2503,   // The Bourne Ultimatum (2007)
+		49040,  // The Bourne Legacy (2012)
+		324668, // Jason Bourne (2016)
+	}},
 	{Slug: "x-men", Title: "X-Men", TMDBIDs: []int64{
 		36657,  // X-Men (2000)
 		36658,  // X2 (2003)
