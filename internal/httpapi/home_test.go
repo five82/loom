@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/five82/loom/internal/library"
 	"github.com/five82/loom/internal/store"
@@ -213,6 +214,20 @@ func TestStartedCountsWatchedEpisodesAndAnyMoviePlayback(t *testing.T) {
 	}
 }
 
+func TestHomeExpiryIsNextPickChangeOrMidnight(t *testing.T) {
+	location := time.FixedZone("server", -7*60*60)
+	cases := []struct{ at, want time.Time }{
+		{time.Date(2025, 8, 12, 2, 0, 0, 0, location), time.Date(2025, 8, 12, 6, 0, 0, 0, location)},
+		{time.Date(2025, 8, 12, 10, 0, 0, 0, location), time.Date(2025, 8, 12, 18, 0, 0, 0, location)},
+		{time.Date(2025, 8, 12, 20, 0, 0, 0, location), time.Date(2025, 8, 13, 0, 0, 0, 0, location)},
+	}
+	for _, c := range cases {
+		if got := homeExpiry(c.at); !got.Equal(c.want) {
+			t.Fatalf("homeExpiry(%v) = %v, want %v", c.at, got, c.want)
+		}
+	}
+}
+
 func TestHomeAPI(t *testing.T) {
 	ctx := context.Background()
 	catalog, err := store.Open(filepath.Join(t.TempDir(), "loom.db"))
@@ -292,5 +307,12 @@ func TestHomeAPI(t *testing.T) {
 	}
 	if home.NextUp == nil || home.RecentlyAdded == nil {
 		t.Fatal("empty rows must be arrays, not null")
+	}
+	expires, err := time.Parse(time.RFC3339, home.ExpiresAt)
+	if err != nil {
+		t.Fatalf("expires_at %q: %v", home.ExpiresAt, err)
+	}
+	if until := time.Until(expires); until <= 0 || until > 24*time.Hour {
+		t.Fatalf("expires_at %v is %v away, want within the next day", expires, until)
 	}
 }

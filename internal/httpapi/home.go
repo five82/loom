@@ -22,6 +22,11 @@ type homeResponse struct {
 	NextUp           []store.Item `json:"next_up"`
 	RecentlyAdded    []store.Item `json:"recently_added"`
 	Shelves          []shelf      `json:"shelves"`
+	// ExpiresAt is the UTC instant at which this response goes stale: the
+	// next 6am/6pm featured-pick change or the next server-local midnight
+	// shelf rotation, whichever comes first. Clients reload at that moment
+	// rather than guessing at Loom's schedule from their own clock.
+	ExpiresAt string `json:"expires_at"`
 }
 
 // shelf is one rotating discovery row. The key is stable across days for a
@@ -94,6 +99,7 @@ func (a *API) home(w http.ResponseWriter, r *http.Request) {
 		NextUp:           withoutHero(nextUp, hero),
 		RecentlyAdded:    withoutHero(recentlyAdded, hero),
 		Shelves:          []shelf{},
+		ExpiresAt:        homeExpiry(now).UTC().Format(time.RFC3339),
 	}
 	for _, s := range shelves {
 		s.Items = withoutHero(s.Items, hero)
@@ -102,6 +108,17 @@ func (a *API) home(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// homeExpiry is the earlier of the next featured-pick boundary and the next
+// server-local midnight, when the shelves rotate.
+func homeExpiry(at time.Time) time.Time {
+	year, month, day := at.Date()
+	midnight := time.Date(year, month, day+1, 0, 0, 0, 0, at.Location())
+	if pick := store.NextFeaturedPickTime(at); pick.Before(midnight) {
+		return pick
+	}
+	return midnight
 }
 
 // epochDay counts server-local calendar days, so the shelves roll over at the

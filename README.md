@@ -427,7 +427,10 @@ collection, Something Different, Watch It Again, and A Quick Watch - seeded by
 the server-local calendar day, so they stay put all day and change tomorrow. A
 candidate with fewer than four items is skipped, except a collection, which is
 served with its two or more owned members. The featured pick is removed from
-every row and shelf. Shorts are not part of discovery.
+every row and shelf. Shorts are not part of discovery. `expires_at` is the UTC
+instant at which the response goes stale - the next featured-pick change or the
+next server-local midnight - so a client can reload then instead of guessing at
+Loom's schedule.
 
 Search matches available movie, show, and episode titles and credited people
 case-insensitively at word starts. Exact and prefix title matches rank first. If
