@@ -181,23 +181,39 @@ WHERE fp.singleton = 1 AND i.available = 0`).Scan(&currentID, &periodStartedAt)
 	return nil
 }
 
+// notResumable keeps a movie already sitting in Continue Watching off the
+// hero: resuming is not discovery, and the row beneath already offers it.
+const notResumable = `NOT EXISTS (
+    SELECT 1 FROM playback_state p WHERE p.item_id = featured_rotation.item_id AND ` + resumablePlayback + `
+)`
+
 // selectFeaturedPick chooses uniformly from movies not yet shown in this cycle.
 // Once all have appeared it clears the shown flags and starts another random
 // cycle, avoiding a back-to-back repeat at the cycle boundary when possible.
+// A movie mid-watch is skipped rather than shown, and stays unshown so it can
+// take a period later in the cycle; it is picked only when nothing else is
+// left in the rotation.
 func selectFeaturedPick(
 	ctx context.Context, tx *sql.Tx, periodStartedAt string, previousID int64,
 ) (int64, bool, error) {
 	var itemID int64
 	err := tx.QueryRowContext(ctx, `
-SELECT item_id FROM featured_rotation WHERE shown = 0 ORDER BY random() LIMIT 1`).Scan(&itemID)
+SELECT item_id FROM featured_rotation WHERE shown = 0 AND `+notResumable+`
+ORDER BY random() LIMIT 1`).Scan(&itemID)
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, err := tx.ExecContext(ctx, `UPDATE featured_rotation SET shown = 0`); err != nil {
 			return 0, false, fmt.Errorf("restart featured rotation: %w", err)
 		}
 		err = tx.QueryRowContext(ctx, `
 SELECT item_id FROM featured_rotation
-WHERE item_id <> ?
+WHERE item_id <> ? AND `+notResumable+`
 ORDER BY random() LIMIT 1`, previousID).Scan(&itemID)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Repeating the previous pick beats promoting a movie already in
+			// Continue Watching; only a rotation with nothing else does that.
+			err = tx.QueryRowContext(ctx, `
+SELECT item_id FROM featured_rotation WHERE `+notResumable+` ORDER BY random() LIMIT 1`).Scan(&itemID)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			err = tx.QueryRowContext(ctx, `
 SELECT item_id FROM featured_rotation ORDER BY random() LIMIT 1`).Scan(&itemID)

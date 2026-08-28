@@ -228,21 +228,21 @@ func (s *Service) Match(ctx context.Context, itemID, tmdbID int64) error {
 	return nil
 }
 
-// applyDetails writes one TMDB detail fetch to the catalog. Only movies browse
-// by genre, so a show's genres are left unstored rather than filling a facet
-// nothing reads. Directors are movie-only for a different reason: TV credits
-// them per episode, and a show's own crew list rarely names anyone a viewer
-// would call its director.
+// applyDetails writes one TMDB detail fetch to the catalog. Genres are stored
+// for shows as well as movies because the home screen's documentary shelf
+// reads them, although only movies browse by genre. Directors are movie-only:
+// TV credits them per episode, and a show's own crew list rarely names anyone
+// a viewer would call its director.
 func (s *Service) applyDetails(ctx context.Context, item *store.Item, details tmdb.Details) error {
 	update := store.MetadataUpdate{
 		TMDBID: details.ID, Title: details.Title, Year: details.Year,
 		Overview: details.Overview, Tagline: details.Tagline, ReleaseDate: details.ReleaseDate,
 		VoteAverage: details.VoteAverage, ContentRating: details.ContentRating,
 		Status: details.Status, TotalSeasons: details.TotalSeasons,
+		Genres:  storeGenres(details.Genres),
 		Credits: storeCredits(details.Cast, nil, nil),
 	}
 	if item.Kind == "movie" {
-		update.Genres = storeGenres(details.Genres)
 		update.Credits = storeCredits(details.Cast, details.Directors, details.Producers)
 	}
 	return s.store.UpdateMetadata(ctx, item.ID, update)

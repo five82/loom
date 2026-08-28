@@ -132,6 +132,8 @@ type collection struct {
 // before the hand-picked shelves. A shelf is dropped when fewer than two of its
 // members are owned: one movie under a heading is worse than leaving it in the
 // grid.
+const hdrCollectionSlug = "hdr"
+
 func (a *API) resolveCollections(ctx context.Context) ([]collection, error) {
 	result := make([]collection, 0, len(collections.All)+2)
 	today := time.Now().UTC()
@@ -147,7 +149,7 @@ func (a *API) resolveCollections(ctx context.Context) ([]collection, error) {
 		return nil, err
 	}
 	if len(hdr) >= 2 {
-		result = append(result, collection{Slug: "hdr", Title: "HDR", Items: hdr})
+		result = append(result, collection{Slug: hdrCollectionSlug, Title: "HDR", Items: hdr})
 	}
 	for _, defined := range collections.All {
 		items, err := a.store.ItemsByTMDBID(ctx, defined.TMDBIDs)

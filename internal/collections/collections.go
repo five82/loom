@@ -18,6 +18,17 @@ type Collection struct {
 	TMDBIDs []int64
 }
 
+// Holiday names the films the home screen leads with through December. It is
+// not a collection: nobody browses to "holiday" in July, and the shelf earns
+// its slot only in season. Trading Places and Planes, Trains and Automobiles
+// are here for their settings rather than their subjects.
+var Holiday = []int64{
+	850,  // A Christmas Story (1983)
+	5825, // National Lampoon's Christmas Vacation (1989)
+	1621, // Trading Places (1983)
+	2609, // Planes, Trains and Automobiles (1987)
+}
+
 // All lists every shelf in display order. Only movies actually in the catalog
 // resolve, so an id here for a film that is not owned simply does not appear,
 // and a shelf that resolves to fewer than two movies is not served at all.
@@ -204,35 +215,5 @@ var All = []Collection{
 		2293, // Mallrats (1995)
 		1832, // Dogma (1999)
 		2294, // Jay and Silent Bob Strike Back (2001)
-	}},
-
-	// Directors. Deliberately limited to a few whose work is well represented
-	// here; this is not meant to grow into a shelf per credit.
-	{Slug: "spielberg", Title: "Steven Spielberg", TMDBIDs: []int64{
-		85,     // Raiders of the Lost Ark (1981)
-		601,    // E.T. the Extra-Terrestrial (1982)
-		87,     // Indiana Jones and the Temple of Doom (1984)
-		89,     // Indiana Jones and the Last Crusade (1989)
-		857,    // Saving Private Ryan (1998)
-		180,    // Minority Report (2002)
-		640,    // Catch Me If You Can (2002)
-		612,    // Munich (2005)
-		57212,  // War Horse (2011)
-		296098, // Bridge of Spies (2015)
-		446354, // The Post (2017)
-	}},
-	{Slug: "scorsese", Title: "Martin Scorsese", TMDBIDs: []int64{
-		1578,   // Raging Bull (1980)
-		769,    // GoodFellas (1990)
-		524,    // Casino (1995)
-		1422,   // The Departed (2006)
-		398978, // The Irishman (2019)
-	}},
-	{Slug: "nolan", Title: "Christopher Nolan", TMDBIDs: []int64{
-		272,    // Batman Begins (2005)
-		155,    // The Dark Knight (2008)
-		27205,  // Inception (2010)
-		49026,  // The Dark Knight Rises (2012)
-		374720, // Dunkirk (2017)
 	}},
 }

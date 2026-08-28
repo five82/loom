@@ -419,17 +419,31 @@ and remove rotation members without changing the active pick, except when that
 movie has been removed from the library.
 
 The home endpoint returns the whole home screen in one response: the featured
-pick as `featured` (null when there is none), the `continue_watching`,
-`next_up`, and `recently_added` rows, and up to three rotating discovery
-`shelves`, each with a stable `key`, a `title`, and up to twelve items. Shelves
-are drawn from a pool - a genre spotlight, New to You, Highly Rated, one
-collection, Something Different, Watch It Again, and A Quick Watch - seeded by
-the server-local calendar day, so they stay put all day and change tomorrow. A
-candidate with fewer than four items is skipped, except a collection, which is
-served with its two or more owned members. The featured pick is removed from
-every row and shelf. Shorts are not part of discovery. `expires_at` is the UTC
-instant at which the response goes stale - the next featured-pick change or the
-next server-local midnight - so a client can reload then instead of guessing at
+pick as `featured` (null when there is none), the `continue_watching` row capped
+at eight, the `next_up` and `recently_added` rows, and up to five rotating
+discovery `shelves`, each with a `key`, a `title`, and up to twelve items. The
+key names the shelf kind and, where the kind makes a pick, the pick itself
+(`genre-Comedy`, `decade-1980`, `person-31-actor`, `col-star-wars`,
+`because-42`), so it is stable for as long as the same posters are behind it.
+Shelves are drawn from a pool seeded by the server-local calendar day, so they
+stay put all day and change tomorrow: a genre spotlight and a decade, both
+weighted toward the library's larger corners; a "Starring" or "Directed by"
+shelf for anyone with four or more unwatched films here; Because You Watched,
+built on the most recently resumed or finished movie from the films sharing its
+director or top-billed cast, then those sharing two of its genres; New to You;
+Highly Rated; Start a Series; Nature & Documentary; Family Night (G and PG);
+one collection other than HDR; Something Different; Watch It Again; A Quick
+Watch; The Long Haul; and Short & Sweet from the shorts library. Through October
+a Halloween shelf of the horror films leads, and through December a holiday
+shelf. Apart from those two, collections, Something Different, and Watch It
+Again, a shelf offers only titles not yet watched, rated at least 6.5, and not
+documentaries; a movie merely opened and closed at the start counts as not yet
+watched. A candidate with fewer than four items is skipped, except a collection,
+which is served with its two or more owned members, and Watch It Again, which
+runs from two. The featured pick is removed from every row and shelf and is
+never a movie currently in Continue Watching. `expires_at` is the UTC instant at
+which the response goes stale - the next featured-pick change or the next
+server-local midnight - so a client can reload then instead of guessing at
 Loom's schedule.
 
 Search matches available movie, show, and episode titles and credited people
@@ -478,4 +492,4 @@ Progress requests use milliseconds:
 ```
 
 Items from 5% through 90% are offered for resume when their duration is at least
-five minutes. At 90% they are marked played, accounting for end credits.
+ten minutes, which keeps a short film out of Continue Watching. At 90% they are marked played, accounting for end credits.

@@ -137,7 +137,7 @@ PRAGMA user_version = 12;`); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 12 || result.To != 13 || result.Created {
+	if result.From != 12 || result.To != currentSchemaVersion || result.Created {
 		t.Fatalf("migration result = %+v", result)
 	}
 	migrated, err := Open(path)
@@ -248,5 +248,79 @@ func TestMigrateRejectsSchemaWithoutAPath(t *testing.T) {
 	_, err = Migrate(context.Background(), path)
 	if err == nil || !strings.Contains(err.Error(), "cannot be migrated") {
 		t.Fatalf("Migrate error = %v", err)
+	}
+}
+
+func TestMigrate13To14MarksShowDetailsForReload(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "loom.db")
+	catalog, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := seedMixedCatalog(t, ctx, catalog)
+	if err := catalog.UpdateMetadata(ctx, ids["movie1"], MetadataUpdate{TMDBID: 1, Title: "Movie"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.UpdateMetadata(ctx, ids["showA"], MetadataUpdate{TMDBID: 2, Title: "Show A"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetProgress(ctx, ids["showA-e1"], 300_000, 1_200_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertImage(ctx, Image{
+		ItemID: ids["showA"], Kind: "poster", Path: "/state/poster.jpg", SourceURL: "https://example/poster.jpg",
+		Tag: "manual", ContentType: "image/jpeg", ManuallySelected: true, UpdatedAt: now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 13`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Migrate(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 13 || result.To != 14 || result.Created {
+		t.Fatalf("migration result = %+v", result)
+	}
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrated.Close() }()
+	var playbackRows, manualArtwork int
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM playback_state`).Scan(&playbackRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM images WHERE manually_selected = 1`).Scan(&manualArtwork); err != nil {
+		t.Fatal(err)
+	}
+	if playbackRows != 1 || manualArtwork != 1 {
+		t.Fatalf("migrated rows = playback %d, manual artwork %d", playbackRows, manualArtwork)
+	}
+	// Matched shows go back to awaiting details so the next scan stores their
+	// genres; an unmatched show has nothing to reload, and movies already
+	// carry theirs.
+	for name, want := range map[string]bool{"movie1": true, "showA": false, "showB": false} {
+		item, err := migrated.Item(ctx, ids[name])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if item.DetailsLoaded != want {
+			t.Fatalf("%s details loaded = %v, want %v", name, item.DetailsLoaded, want)
+		}
 	}
 }

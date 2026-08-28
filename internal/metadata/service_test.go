@@ -909,7 +909,7 @@ func TestStoreCreditsIncludeOnlyNotableProducersAndCapTheCast(t *testing.T) {
 
 // TestShowCreditsOmitCrew covers the split between the two kinds: TV credits
 // directors per episode, and a show's own crew list is not stored.
-func TestShowCreditsOmitCrew(t *testing.T) {
+func TestShowKeepsGenresAndOmitsCrew(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	catalog, err := store.Open(filepath.Join(root, "loom.db"))
@@ -920,6 +920,7 @@ func TestShowCreditsOmitCrew(t *testing.T) {
 	service := New(catalog, nil, filepath.Join(root, "images"), slog.Default())
 	details := tmdb.Details{
 		ID: 1, Title: "Title",
+		Genres:    []tmdb.Genre{{ID: 99, Name: "Documentary"}},
 		Cast:      []tmdb.CastCredit{{ID: 10, Name: "An Actor", Character: "Someone"}},
 		Directors: []tmdb.Director{{ID: 20, Name: "A Director"}},
 		Producers: []tmdb.Producer{{ID: 1, Name: "George Lucas"}},
@@ -961,6 +962,11 @@ func TestShowCreditsOmitCrew(t *testing.T) {
 		}
 		if len(stored.Credits) != testCase.wantCredits {
 			t.Fatalf("%s credits = %+v", testCase.kind, stored.Credits)
+		}
+		// Both kinds keep their genres: the home screen's documentary shelf
+		// reads a show's as much as a movie's.
+		if len(stored.Genres) != 1 || stored.Genres[0].Name != "Documentary" {
+			t.Fatalf("%s genres = %+v", testCase.kind, stored.Genres)
 		}
 		if stored.Credits[len(stored.Credits)-1].Name != "An Actor" {
 			t.Fatalf("%s lost its cast: %+v", testCase.kind, stored.Credits)

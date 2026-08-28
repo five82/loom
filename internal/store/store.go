@@ -66,7 +66,7 @@ func Backup(ctx context.Context, source, destination string) error {
 	return nil
 }
 
-const currentSchemaVersion = 13
+const currentSchemaVersion = 14
 
 func (s *Store) ensureSchema() error {
 	version, err := schemaVersion(s.db)
@@ -1419,7 +1419,7 @@ ON CONFLICT(item_id) DO UPDATE SET position_ms = excluded.position_ms,
 
 func makeProgress(positionMS, durationMS int64, played bool, updatedAt string) *Progress {
 	resume := int64(0)
-	if !played && durationMS >= 5*60*1000 && float64(positionMS)/float64(durationMS) >= 0.05 {
+	if !played && durationMS >= 10*60*1000 && float64(positionMS)/float64(durationMS) >= 0.05 {
 		resume = positionMS
 	}
 	return &Progress{
@@ -1518,8 +1518,10 @@ SELECT position_ms, duration_ms, played, updated_at FROM playback_state WHERE it
 // resumablePlayback describes a playback row a viewer can pick up mid-stream.
 // NextUp reuses it to keep a show out of Next Up while Continue Watching is
 // already offering an episode of it, so the two home-screen rows never list the
-// same show twice.
-const resumablePlayback = `p.played = 0 AND p.duration_ms >= 300000
+// same show twice. The ten-minute floor keeps the Pixar shorts out of Continue Watching: a short
+// is watched in one sitting or not at all, and one abandoned two minutes in
+// only clutters the row.
+const resumablePlayback = `p.played = 0 AND p.duration_ms >= 600000
     AND CAST(p.position_ms AS REAL) / p.duration_ms >= 0.05
     AND CAST(p.position_ms AS REAL) / p.duration_ms < 0.90`
 

@@ -77,8 +77,8 @@ func TestAuditPassesOnACompleteCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SchemaVersion != 13 {
-		t.Fatalf("schema version = %d, want 13", report.SchemaVersion)
+	if report.SchemaVersion != currentSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", report.SchemaVersion, currentSchemaVersion)
 	}
 	if report.PlaybackStateRows != 1 || report.ManualArtworkSelections != 1 {
 		t.Fatalf("preserved state = %d playback rows, %d manual artwork selections",

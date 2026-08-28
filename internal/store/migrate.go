@@ -41,6 +41,16 @@ WHERE i.available = 1 AND i.kind = 'movie' AND l.kind = 'movies'
         SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
         WHERE ig.item_id = i.id AND g.name = 'Documentary' COLLATE NOCASE
     );`,
+}, {
+	// Shows now store their TMDB genres, which the home screen reads for the
+	// documentary shelf. Existing shows were detailed before that, so their
+	// details are marked unloaded and the next scan fetches them again;
+	// artwork and playback state are untouched because the refetch only
+	// rewrites provider-owned text fields, genres, and credits.
+	from: 13,
+	to:   14,
+	sql: `
+UPDATE items SET details_loaded = 0 WHERE kind = 'show' AND tmdb_id <> 0;`,
 }}
 
 // MigrationResult describes the schema change made by Migrate.

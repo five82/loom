@@ -200,3 +200,56 @@ func TestFeaturedPeriodKeepsLocalSixAcrossDST(t *testing.T) {
 		t.Fatalf("DST period duration = %v, want 11h between local boundaries", end.Sub(start))
 	}
 }
+
+func TestFeaturedPickSkipsMoviesInContinueWatching(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for index, title := range []string{"One", "Two", "Three"} {
+		id := addFeaturedTestMovie(t, catalog, libraryID, scanID, title, 8.0, []Genre{{ID: 18, Name: "Drama"}})
+		if _, err := catalog.UpsertMedia(ctx, MediaFile{
+			ItemID: id, Path: "/movies/" + title + ".mkv", Size: 1, MTimeNS: int64(index),
+			DurationMS: 6_000_000, LastSeenScanID: scanID,
+		}, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, 3, 3, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Two of the three are mid-watch, so only the third can be the hero; the
+	// resumable pair stay unshown rather than being burned from the cycle.
+	for _, id := range ids[:2] {
+		if _, err := catalog.SetProgress(ctx, id, 3_000_000, 6_000_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	location := time.FixedZone("server", -7*60*60)
+	for period := 0; period < 4; period++ {
+		at := time.Date(2025, 8, 12, 6, 0, 0, 0, location).Add(time.Duration(period) * 12 * time.Hour)
+		pick, err := catalog.FeaturedPickAt(ctx, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pick.Item.ID != ids[2] {
+			t.Fatalf("period %d picked %d, want the only movie not in Continue Watching %d", period, pick.Item.ID, ids[2])
+		}
+	}
+	var unshown int
+	if err := catalog.db.QueryRow(`SELECT COUNT(*) FROM featured_rotation WHERE shown = 0`).Scan(&unshown); err != nil {
+		t.Fatal(err)
+	}
+	if unshown != 2 {
+		t.Fatalf("unshown rotation members = %d, want the two resumable movies", unshown)
+	}
+}
