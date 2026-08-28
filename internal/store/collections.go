@@ -60,12 +60,7 @@ func (s *Store) ItemsReleasedBetween(ctx context.Context, start, end time.Time) 
 const releaseOrder = `CASE WHEN i.release_date = '' THEN 1 ELSE 0 END, i.release_date,
     i.year, i.title COLLATE NOCASE, i.id`
 
-const alphabeticalOrder = `CASE
-        WHEN substr(i.title, 1, 4) = 'the ' COLLATE NOCASE THEN substr(i.title, 5)
-        WHEN substr(i.title, 1, 3) = 'an ' COLLATE NOCASE THEN substr(i.title, 4)
-        WHEN substr(i.title, 1, 2) = 'a ' COLLATE NOCASE THEN substr(i.title, 3)
-        ELSE i.title
-    END COLLATE NOCASE, i.title COLLATE NOCASE, i.id`
+const alphabeticalOrder = sortTitleExpr + ` COLLATE NOCASE, i.title COLLATE NOCASE, i.id`
 
 const newestReleaseOrder = `i.release_date DESC, i.title COLLATE NOCASE, i.id`
 

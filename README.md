@@ -424,6 +424,13 @@ insertion, deletion, substitution, or adjacent transposition; the response's
 episode results include `series_title` and `season_title` for display outside
 their hierarchy.
 
+Every alphabetical listing - browse, collections, and search within a rank -
+sorts past one leading English article, so The Departed files under D. Items
+carry that key as `sort_title`, present only where dropping the article changes
+the title. Clients drawing a listing in the order it arrives need not look at
+it; a client sorting its own local copy should sort by `sort_title` where it is
+present and by `title` otherwise, so an offline library keeps the same order.
+
 Continue Watching and Next Up list episodes away from their show as well, so
 their episode entries carry `series_title` too. An episode's own title rarely
 names the show, and the artwork on those rows is the episode's still.

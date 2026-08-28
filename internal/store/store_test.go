@@ -183,6 +183,17 @@ func TestListItemsSortsPastLeadingArticles(t *testing.T) {
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("title order = %v, want %v", got, want)
 	}
+	// The key clients sort by offline has to agree with the SQL that produced
+	// the order above, including where an article-like word is the whole title
+	// ("The") or is not followed by a space.
+	gotKeys := make([]string, len(items))
+	for index := range items {
+		gotKeys[index] = items[index].SortTitle
+	}
+	wantKeys := []string{"", "Clockwork Orange", "Education", "Empire Strikes Back", "", "", "Thing", ""}
+	if strings.Join(gotKeys, "|") != strings.Join(wantKeys, "|") {
+		t.Fatalf("sort titles = %v, want %v", gotKeys, wantKeys)
+	}
 }
 
 func TestMovieGenres(t *testing.T) {
@@ -580,6 +591,64 @@ func TestSearchRanksTitleMatchesAboveCreditedPeople(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("character names are not searchable: %+v", results)
+	}
+}
+
+// Search once ordered by the raw title, so a director search filed The
+// Departed under T while browse and every collection filed it under D.
+func TestSearchSortsPastLeadingArticles(t *testing.T) {
+	ctx := context.Background()
+	catalog, err := Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+
+	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// None of these titles contain the query, so every hit arrives through the
+	// same credited person and lands in one rank bucket. What is left is the
+	// title order under test.
+	titles := []string{"The Departed", "Gangs of New York", "Cape Fear", "An Irish Story", "A Bronx Tale"}
+	for index, title := range titles {
+		itemID, err := catalog.UpsertItem(ctx, ItemInput{
+			LibraryID: libraryID, SourceKey: title, Kind: "movie", Title: title, ScanID: scanID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := catalog.UpdateMetadata(ctx, itemID, MetadataUpdate{
+			TMDBID: int64(1000 + index),
+			Credits: []Credit{{PersonID: 1032, Name: "Martin Scorsese", Role: "director"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := catalog.FinishScan(ctx, libraryID, scanID, len(titles), len(titles), 0, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	results, fuzzy, err := catalog.SearchItems(ctx, "scorsese", 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fuzzy {
+		t.Fatalf("director search fell back to fuzzy matching: %+v", results)
+	}
+	got := make([]string, len(results))
+	for index := range results {
+		got[index] = results[index].Title
+	}
+	want := []string{"A Bronx Tale", "Cape Fear", "The Departed", "Gangs of New York", "An Irish Story"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("search title order = %v, want %v", got, want)
+	}
+	// Clients sorting their own downloads offline need the same key, and only
+	// where it differs from the title.
+	if results[2].SortTitle != "Departed" || results[1].SortTitle != "" {
+		t.Fatalf("search sort titles = %q, %q", results[2].SortTitle, results[1].SortTitle)
 	}
 }
 

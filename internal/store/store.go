@@ -674,11 +674,16 @@ WHERE i.library_id = ? AND i.available = 1`, libraryID).Scan(&count)
 
 // Item is the API-facing catalog representation.
 type Item struct {
-	ID               int64   `json:"id"`
-	LibraryID        int64   `json:"library_id"`
-	ParentID         *int64  `json:"parent_id,omitempty"`
-	Kind             string  `json:"kind"`
-	Title            string  `json:"title"`
+	ID        int64  `json:"id"`
+	LibraryID int64  `json:"library_id"`
+	ParentID  *int64 `json:"parent_id,omitempty"`
+	Kind      string `json:"kind"`
+	Title     string `json:"title"`
+	// SortTitle is Title with one leading English article dropped, and is sent
+	// only when that actually changes the title. Server-ordered listings are
+	// already in this order; a client sorting its own downloads offline needs
+	// the key to land on the same order rather than reimplementing the rule.
+	SortTitle        string  `json:"sort_title,omitempty"`
 	Year             int     `json:"year,omitempty"`
 	SeasonNumber     int     `json:"season_number,omitempty"`
 	EpisodeNumber    int     `json:"episode_number,omitempty"`
@@ -731,6 +736,29 @@ type Item struct {
 	// search, Continue Watching, and Next Up. Empty everywhere else, and for
 	// everything that is not an episode.
 	SeriesTitle string `json:"series_title,omitempty"`
+}
+
+// sortTitleExpr is the key every alphabetical listing sorts by: the title with
+// one leading English article skipped, so The Departed files under D. Browse,
+// collections, and search all order by it, because a title that sorts under D
+// in the grid and under T in search reads as a bug either way. sortTitle is the
+// Go mirror of this expression and the two must stay in step.
+const sortTitleExpr = `CASE
+        WHEN substr(i.title, 1, 4) = 'the ' COLLATE NOCASE THEN substr(i.title, 5)
+        WHEN substr(i.title, 1, 3) = 'an ' COLLATE NOCASE THEN substr(i.title, 4)
+        WHEN substr(i.title, 1, 2) = 'a ' COLLATE NOCASE THEN substr(i.title, 3)
+        ELSE i.title
+    END`
+
+// sortTitle mirrors sortTitleExpr in Go so listings can carry the key to
+// clients. Only the leading article is dropped; the title itself is untouched.
+func sortTitle(title string) string {
+	for _, article := range []string{"the ", "an ", "a "} {
+		if len(title) >= len(article) && strings.EqualFold(title[:len(article)], article) {
+			return title[len(article):]
+		}
+	}
+	return title
 }
 
 const itemColumns = `i.id, i.library_id, i.parent_id, i.kind, i.title, i.year, i.season_number,
@@ -1021,6 +1049,7 @@ WHERE i.available = 1 AND i.kind IN ('movie', 'show', 'episode')
         OR i.id IN (SELECT c.item_id FROM item_credits c JOIN people p ON p.id = c.person_id
             WHERE `+matcher+`(p.name, ?)))
 ORDER BY `+rank+`,
+    `+sortTitleExpr+` COLLATE NOCASE,
     i.title COLLATE NOCASE,
     CASE i.kind WHEN 'movie' THEN 0 WHEN 'show' THEN 1 ELSE 2 END,
     i.id
@@ -1097,12 +1126,7 @@ FROM items i JOIN libraries l ON l.id = i.library_id
 LEFT JOIN playback_state p ON p.item_id = i.id
 WHERE ` + strings.Join(clauses, " AND ") + `
 ORDER BY CASE i.kind WHEN 'season' THEN i.season_number WHEN 'episode' THEN i.episode_number ELSE 0 END,
-    CASE
-        WHEN substr(i.title, 1, 4) = 'the ' COLLATE NOCASE THEN substr(i.title, 5)
-        WHEN substr(i.title, 1, 3) = 'an ' COLLATE NOCASE THEN substr(i.title, 4)
-        WHEN substr(i.title, 1, 2) = 'a ' COLLATE NOCASE THEN substr(i.title, 3)
-        ELSE i.title
-    END COLLATE NOCASE,
+    ` + sortTitleExpr + ` COLLATE NOCASE,
     i.title COLLATE NOCASE, i.id
 LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1166,6 +1190,9 @@ func scanItemFields(row rowScanner, trailing ...any) (Item, error) {
 	}
 	if mediaID != 0 {
 		item.MediaTag = MediaTag(mediaID, mediaSize, mediaMTimeNS)
+	}
+	if sorted := sortTitle(item.Title); sorted != item.Title {
+		item.SortTitle = sorted
 	}
 	return item, nil
 }
