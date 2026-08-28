@@ -7,6 +7,16 @@ clients. Loom intentionally never transcodes or remuxes media.
 The initial client will be an Android/Android TV application. Loom currently
 has no authentication, so it should only be used on a trusted LAN.
 
+## Expectations
+
+This repository is shared as is. Loom is a personal tool. It is open source in
+the spirit of sharing, but it is not actively maintained as a general-purpose
+product.
+
+- Personal-first: behavior may change as the application evolves.
+- Best-effort only: questions and issues may receive a slow response or none.
+- The project began as and remains an experiment. Expect rough edges.
+
 ## Requirements
 
 - Linux
