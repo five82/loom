@@ -314,6 +314,7 @@ GET  /api/v1/libraries
 GET  /api/v1/genres
 GET  /api/v1/collections
 GET  /api/v1/featured-pick
+GET  /api/v1/home
 GET  /api/v1/search?q=pilot
 GET  /api/v1/items?library=movies
 GET  /api/v1/items?library=shorts
@@ -332,6 +333,7 @@ DELETE /api/v1/items/{id}/played
 GET  /api/v1/continue-watching
 GET  /api/v1/next-up
 GET  /api/v1/recently-added
+GET  /api/v1/recently-played
 POST /api/v1/scan
 GET  /api/v1/scan
 ```
@@ -415,6 +417,17 @@ ends. The pick changes at 6am and 6pm in the server's local time. Loom presents
 every eligible movie in random order before repeating one. Successful scans add
 and remove rotation members without changing the active pick, except when that
 movie has been removed from the library.
+
+The home endpoint returns the whole home screen in one response: the featured
+pick as `featured` (null when there is none), the `continue_watching`,
+`next_up`, and `recently_added` rows, and up to three rotating discovery
+`shelves`, each with a stable `key`, a `title`, and up to twelve items. Shelves
+are drawn from a pool - a genre spotlight, New to You, Highly Rated, one
+collection, Something Different, Watch It Again, and A Quick Watch - seeded by
+the server-local calendar day, so they stay put all day and change tomorrow. A
+candidate with fewer than four items is skipped, except a collection, which is
+served with its two or more owned members. The featured pick is removed from
+every row and shelf. Shorts are not part of discovery.
 
 Search matches available movie, show, and episode titles and credited people
 case-insensitively at word starts. Exact and prefix title matches rank first. If

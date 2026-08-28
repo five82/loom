@@ -46,6 +46,7 @@ func New(catalog *store.Store, scans *library.Manager, metadataService *metadata
 	api.public.HandleFunc("GET /api/v1/genres", api.genres)
 	api.public.HandleFunc("GET /api/v1/collections", api.collections)
 	api.public.HandleFunc("GET /api/v1/featured-pick", api.featuredPick)
+	api.public.HandleFunc("GET /api/v1/home", api.home)
 	api.public.HandleFunc("GET /api/v1/search", api.search)
 	api.public.HandleFunc("GET /api/v1/items", api.items)
 	api.public.HandleFunc("GET /api/v1/items/{id}", api.item)
@@ -111,45 +112,54 @@ func (a *API) genres(w http.ResponseWriter, r *http.Request) {
 // collections serves every shelf with its members resolved, rather than a
 // summary plus a request per shelf, because a client drawing the collections
 // row needs the posters immediately and the whole payload is a few hundred
-// movies. Dynamic shelves are resolved from the current catalog before the
-// hand-picked shelves. A shelf is dropped when fewer than two of its members
-// are owned: one movie under a heading is worse than leaving it in the grid.
+// movies.
 func (a *API) collections(w http.ResponseWriter, r *http.Request) {
-	type collection struct {
-		Slug  string       `json:"slug"`
-		Title string       `json:"title"`
-		Items []store.Item `json:"items"`
-	}
-	result := make([]collection, 0, len(collections.All)+2)
-	today := time.Now().UTC()
-	newReleases, err := a.store.ItemsReleasedBetween(r.Context(), today.AddDate(0, -18, 0), today)
+	result, err := a.resolveCollections(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+}
+
+type collection struct {
+	Slug  string       `json:"slug"`
+	Title string       `json:"title"`
+	Items []store.Item `json:"items"`
+}
+
+// resolveCollections resolves the dynamic shelves from the current catalog
+// before the hand-picked shelves. A shelf is dropped when fewer than two of its
+// members are owned: one movie under a heading is worse than leaving it in the
+// grid.
+func (a *API) resolveCollections(ctx context.Context) ([]collection, error) {
+	result := make([]collection, 0, len(collections.All)+2)
+	today := time.Now().UTC()
+	newReleases, err := a.store.ItemsReleasedBetween(ctx, today.AddDate(0, -18, 0), today)
+	if err != nil {
+		return nil, err
 	}
 	if len(newReleases) >= 2 {
 		result = append(result, collection{Slug: "new-releases", Title: "New Releases", Items: newReleases})
 	}
-	hdr, err := a.store.ItemsByVideoDynamicRange(r.Context(), []string{"hdr", "dolby_vision"})
+	hdr, err := a.store.ItemsByVideoDynamicRange(ctx, []string{"hdr", "dolby_vision"})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 	if len(hdr) >= 2 {
 		result = append(result, collection{Slug: "hdr", Title: "HDR", Items: hdr})
 	}
 	for _, defined := range collections.All {
-		items, err := a.store.ItemsByTMDBID(r.Context(), defined.TMDBIDs)
+		items, err := a.store.ItemsByTMDBID(ctx, defined.TMDBIDs)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, err
 		}
 		if len(items) < 2 {
 			continue
 		}
 		result = append(result, collection{Slug: defined.Slug, Title: defined.Title, Items: items})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+	return result, nil
 }
 
 func (a *API) featuredPick(w http.ResponseWriter, r *http.Request) {
