@@ -430,24 +430,40 @@ and remove rotation members without changing the active pick, except when that
 movie has been removed from the library.
 
 The channels endpoint returns Loom's linear TV lineup: every channel, in
-ascending channel number, with the programs scheduled around now. Channels are
-generated from the catalog rather than configured - the four shows with the most
-available episodes, the four best represented movie genres, one for HDR and
-Dolby Vision, and one drawing on the whole library. A channel takes the next
-unused number the first time its key appears and keeps it; numbers are never
-reused, and a channel whose show or genre stops qualifying keeps its place
-instead of renumbering the lineup around it. Only available movies and episodes
-with a probed runtime are scheduled.
+ascending channel number, with the programs scheduled around now. The lineup is
+a hand-built table in `internal/channels/lineup.go`, like the collections,
+naming shows and films by TMDB id and movies by genre. It is meant to feel like
+a cable box that has been running for years: fourteen channels, each with a
+daily grid of blocks in the server's local time, a broadcast day that runs from
+06:00 to 06:00, and weekend blocks that override the grid. Single-show
+channels run South Park and Married... with Children in order, and again
+shuffled; block channels rotate through sitcoms, dramas, classics, cartoons and
+reality, and nature and documentary series; movie channels draw on genre pools
+for drama, action, comedy, science fiction, and family films, with a Pixar
+short after every Family feature, Star Trek: The Next Generation each evening
+on Sci-Fi, and franchise marathons from the collections on weekends. A channel
+takes the next unused number the first time its key appears and keeps it;
+numbers are never reused, and a channel dropped from the lineup is removed
+without renumbering the rest. Only available movies and episodes with a probed
+runtime are scheduled, and a channel whose shows are not in the library stays
+dark rather than disappearing.
 
 Programs run back to back at their real runtime, with no slot alignment, and
-every channel is kept 24 hours ahead. A show channel airs its episodes in season
-and episode order, skips specials, and loops; every other channel picks at
-random without repeating anything still inside its stored window. Loom
-regenerates the schedule at startup, every fifteen minutes, and after every
-scan, dropping programs that ended more than six hours ago; a channel whose
-schedule ran out while Loom was down restarts from now rather than replaying the
-hours nobody watched. The endpoint regenerates on its own if it is asked before
-the schedule reaches that far, so a client can query a daemon that has only just
+every channel is kept 24 hours ahead. Block boundaries are soft: a program that
+overruns finishes, and the next block starts when it ends. A show runs its
+seasons in order with the specials after the last one and loops, and every
+block remembers its place, so tonight's block picks up where last night's
+ended. A shuffled pool deals its titles in a fresh random order each cycle, so
+nothing repeats until everything has aired, and a title added to the library
+joins the current cycle. A new channel is joined in progress at a fixed,
+key-derived point in its run rather than starting at a pilot, so on the first
+day it is already mid-season and mid-episode. Loom regenerates the schedule at
+startup, every fifteen minutes, and after every scan, and keeps a month of
+history, because a title a weekend marathon aired counts as aired for the
+channel's shuffle until its cycle comes round; a channel whose schedule ran
+out while Loom was down is joined in progress again rather than replaying the
+hours nobody watched. The endpoint regenerates on its own if it is asked before the
+schedule reaches that far, so a client can query a daemon that has only just
 started.
 
 `hours` is between 1 and 48 and defaults to 24, and the response holds every

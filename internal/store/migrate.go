@@ -17,55 +17,26 @@ type schemaMigration struct {
 	sql  string
 }
 
-// Version 12 is the migration baseline. Fresh databases are created directly
-// at currentSchemaVersion; append each future released upgrade to this list.
+// Version 15 is the migration baseline: the one Loom instance is there, so
+// older upgrades were dropped. Fresh databases are created directly at
+// currentSchemaVersion; append each future released upgrade to this list.
 var schemaMigrations = []schemaMigration{{
-	from: 12,
-	to:   13,
+	// The channel lineup is now a hand-built table rather than a ranking of
+	// the catalog, and every source keeps a cursor so a show resumes where it
+	// left off. The version-15 tables held only the proof-of-concept lineup
+	// and a regenerable schedule, so they are replaced outright; the daemon
+	// rebuilds both on its next start. No item, playback, or artwork row is
+	// touched.
+	from: 15,
+	to:   16,
 	sql: `
-CREATE TABLE featured_rotation (
-    item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    shown INTEGER NOT NULL DEFAULT 0 CHECK (shown IN (0, 1))
-);
-CREATE TABLE featured_pick (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    period_started_at TEXT NOT NULL
-);
-INSERT INTO featured_rotation(item_id, shown)
-SELECT i.id, 0
-FROM items i JOIN libraries l ON l.id = i.library_id
-WHERE i.available = 1 AND i.kind = 'movie' AND l.kind = 'movies'
-    AND i.vote_average >= 7.5
-    AND NOT EXISTS (
-        SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
-        WHERE ig.item_id = i.id AND g.name = 'Documentary' COLLATE NOCASE
-    );`,
-}, {
-	// Shows now store their TMDB genres, which the home screen reads for the
-	// documentary shelf. Existing shows were detailed before that, so their
-	// details are marked unloaded and the next scan fetches them again;
-	// artwork and playback state are untouched because the refetch only
-	// rewrites provider-owned text fields, genres, and credits.
-	from: 13,
-	to:   14,
-	sql: `
-UPDATE items SET details_loaded = 0 WHERE kind = 'show' AND tmdb_id <> 0;`,
-}, {
-	// Warp's linear channels and their rolling schedule. Both tables are new
-	// and empty; the generator fills them from the existing catalog on the
-	// next daemon start, so no existing row is touched.
-	from: 14,
-	to:   15,
-	sql: `
+DROP TABLE channel_programs;
+DROP TABLE channels;
 CREATE TABLE channels (
     id INTEGER PRIMARY KEY,
     number INTEGER NOT NULL UNIQUE,
     key TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('show', 'genre', 'hdr', 'mix')),
-    item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
-    genre_id INTEGER REFERENCES genres(id),
     created_at TEXT NOT NULL
 );
 CREATE TABLE channel_programs (
@@ -76,7 +47,15 @@ CREATE TABLE channel_programs (
     ends_at TEXT NOT NULL
 );
 CREATE INDEX channel_programs_channel_idx ON channel_programs(channel_id, starts_at);
-CREATE INDEX channel_programs_ends_idx ON channel_programs(ends_at);`,
+CREATE INDEX channel_programs_ends_idx ON channel_programs(ends_at);
+CREATE TABLE channel_cursors (
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    cycle INTEGER NOT NULL,
+    cycle_started_at TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, source)
+);`,
 }}
 
 // MigrationResult describes the schema change made by Migrate.

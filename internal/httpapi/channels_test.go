@@ -29,7 +29,6 @@ type channelEntry = struct {
 	Number   int    `json:"number"`
 	Key      string `json:"key"`
 	Name     string `json:"name"`
-	Kind     string `json:"kind"`
 	Programs []struct {
 		ID       int64      `json:"id"`
 		StartsAt string     `json:"starts_at"`
@@ -152,10 +151,9 @@ func channelByKey(t *testing.T, lineup channelsResponse, key string) channelEntr
 func TestChannelsAPIServesTheWholeLineup(t *testing.T) {
 	catalog, path, present, presentMedia, missing := channelCatalog(t)
 	defer func() { _ = catalog.Close() }()
-	// A channel with nothing left to air keeps its place in the lineup.
-	if _, err := catalog.CreateChannel(context.Background(), store.Channel{
-		Key: "genre:99", Name: "Western", Kind: "genre", GenreID: 99,
-	}, store.ChannelTime(time.Now())); err != nil {
+	// A channel the lineup no longer names is dropped.
+	if _, err := catalog.CreateChannel(context.Background(), "genre:99", "Western",
+		store.ChannelTime(time.Now())); err != nil {
 		t.Fatal(err)
 	}
 	server := channelsServer(t, catalog)
@@ -169,10 +167,10 @@ func TestChannelsAPIServesTheWholeLineup(t *testing.T) {
 	if now.Before(before) || now.After(before.Add(time.Minute)) || !strings.HasSuffix(lineup.Now, "Z") {
 		t.Fatalf("now = %q, want a UTC server clock near %s", lineup.Now, before)
 	}
-	// Western was already there; Action and Mix are generated, and Western is
-	// not renumbered around them. There is no HDR channel because nothing in
-	// the catalog is HDR.
-	if len(lineup.Items) != 3 {
+	// Every lineup channel is served in lineup order, whether or not the
+	// catalog has anything for it, and the stale one is gone. Its number is
+	// not reused.
+	if len(lineup.Items) != len(channels.Lineup) {
 		var keys []string
 		for _, channel := range lineup.Items {
 			keys = append(keys, channel.Key)
@@ -180,40 +178,32 @@ func TestChannelsAPIServesTheWholeLineup(t *testing.T) {
 		t.Fatalf("lineup = %v", keys)
 	}
 	for index, channel := range lineup.Items {
-		if channel.Number != index+1 || channel.ID == 0 {
-			t.Fatalf("channel %d = number %d, id %d", index, channel.Number, channel.ID)
+		if channel.Key != channels.Lineup[index].Key || channel.Name != channels.Lineup[index].Name ||
+			channel.Number != index+2 || channel.ID == 0 {
+			t.Fatalf("channel %d = %+v, want %s at %d", index, channel, channels.Lineup[index].Key, index+2)
 		}
 	}
-	western := channelByKey(t, lineup, "genre:99")
-	if western.Number != 1 || western.Name != "Western" || western.Kind != "genre" {
-		t.Fatalf("Western channel = %+v", western.Number)
-	}
 	// An empty schedule is an empty list, not null.
-	if len(western.Programs) != 0 || !strings.Contains(body, `"programs":[]`) {
-		t.Fatalf("Western channel programs = %d", len(western.Programs))
-	}
-	if action := channelByKey(t, lineup, "genre:28"); action.Number != 2 || action.Name != "Action" {
-		t.Fatalf("Action channel = number %d, name %q", action.Number, action.Name)
-	}
-	mixChannel := channelByKey(t, lineup, "mix")
-	if mixChannel.Number != 3 || mixChannel.Name != "Mix" || mixChannel.Kind != "mix" {
-		t.Fatalf("Mix channel = number %d, name %q, kind %q",
-			mixChannel.Number, mixChannel.Name, mixChannel.Kind)
+	if southPark := channelByKey(t, lineup, "south-park"); len(southPark.Programs) != 0 ||
+		!strings.Contains(body, `"programs":[]`) {
+		t.Fatalf("South Park programs = %d", len(southPark.Programs))
 	}
 
-	mix := mixChannel.Programs
-	if len(mix) < 2 {
-		t.Fatalf("Mix channel scheduled %d programs", len(mix))
+	action := channelByKey(t, lineup, "action").Programs
+	if len(action) < 2 {
+		t.Fatalf("Action channel scheduled %d programs", len(action))
 	}
-	if mix[0].StartsAt != lineup.Now {
-		t.Fatalf("first program starts at %s, want the fresh schedule to start at %s",
-			mix[0].StartsAt, lineup.Now)
+	// The channel was joined in progress: the first program is already under
+	// way rather than starting on the instant the schedule was made.
+	if action[0].StartsAt >= lineup.Now || action[0].EndsAt <= lineup.Now {
+		t.Fatalf("first program runs %s to %s, want it under way at %s",
+			action[0].StartsAt, action[0].EndsAt, lineup.Now)
 	}
-	if last := mix[len(mix)-1]; last.EndsAt < store.ChannelTime(now.Add(24*time.Hour)) {
+	if last := action[len(action)-1]; last.EndsAt < store.ChannelTime(now.Add(24*time.Hour)) {
 		t.Fatalf("schedule reaches only %s", last.EndsAt)
 	}
 	seen := map[int64]bool{}
-	for index, program := range mix {
+	for index, program := range action {
 		seen[program.Item.ID] = true
 		if program.ID == 0 || program.Item.Title == "" || program.Item.DurationMS == 0 {
 			t.Fatalf("program %d: id %d, title %q, duration %d",
@@ -225,9 +215,9 @@ func TestChannelsAPIServesTheWholeLineup(t *testing.T) {
 		if len(program.Item.Genres) != 1 || program.Item.Genres[0].Name != "Action" {
 			t.Fatalf("program %d genres = %+v", index, program.Item.Genres)
 		}
-		if index > 0 && program.StartsAt != mix[index-1].EndsAt {
+		if index > 0 && program.StartsAt != action[index-1].EndsAt {
 			t.Fatalf("program %d starts at %s, previous ends at %s",
-				index, program.StartsAt, mix[index-1].EndsAt)
+				index, program.StartsAt, action[index-1].EndsAt)
 		}
 		if program.Video == nil || program.Video.Codec != "hevc" || program.Video.Width != 1920 ||
 			program.Video.Height != 1080 || program.Video.Resolution != "1080p" ||
@@ -249,13 +239,13 @@ func TestChannelsAPIServesTheWholeLineup(t *testing.T) {
 		}
 	}
 	if !seen[present] || !seen[missing] {
-		t.Fatalf("a day of Mix aired only %v", seen)
+		t.Fatalf("a day of Action aired only %v", seen)
 	}
 
 	// The stream URL is built from the file on disk, so the media endpoint
 	// accepts it.
 	streamURL := ""
-	for _, program := range mix {
+	for _, program := range action {
 		if program.Item.ID == present {
 			streamURL = program.StreamURL
 			break
@@ -290,17 +280,17 @@ func TestChannelsAPIWindowAndValidation(t *testing.T) {
 	if len(short.Items) != len(full.Items) {
 		t.Fatalf("one hour returned %d channels, want %d", len(short.Items), len(full.Items))
 	}
-	fullMix := channelByKey(t, full, "mix").Programs
-	shortMix := channelByKey(t, short, "mix").Programs
-	if len(shortMix) == 0 || len(shortMix) >= len(fullMix) {
+	fullAction := channelByKey(t, full, "action").Programs
+	shortAction := channelByKey(t, short, "action").Programs
+	if len(shortAction) == 0 || len(shortAction) >= len(fullAction) {
 		t.Fatalf("one hour returned %d programs, twenty-four returned %d",
-			len(shortMix), len(fullMix))
+			len(shortAction), len(fullAction))
 	}
 	now, err := time.Parse(time.RFC3339, short.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, program := range shortMix {
+	for _, program := range shortAction {
 		if program.StartsAt >= store.ChannelTime(now.Add(time.Hour)) {
 			t.Fatalf("program starting at %s is outside the requested window", program.StartsAt)
 		}
@@ -321,8 +311,8 @@ func TestChannelsAPIWindowAndValidation(t *testing.T) {
 	}
 }
 
-// A catalog with nothing to air still answers, with an empty list rather than
-// null.
+// A catalog with nothing to air still answers with the whole lineup, every
+// channel dark.
 func TestChannelsAPIEmptyCatalog(t *testing.T) {
 	catalog, err := store.Open(filepath.Join(t.TempDir(), "loom.db"))
 	if err != nil {
@@ -331,7 +321,12 @@ func TestChannelsAPIEmptyCatalog(t *testing.T) {
 	defer func() { _ = catalog.Close() }()
 	server := channelsServer(t, catalog)
 	lineup, body := getChannels(t, server, "")
-	if len(lineup.Items) != 0 || !strings.Contains(body, `"items":[]`) {
+	if len(lineup.Items) != len(channels.Lineup) || !strings.Contains(body, `"programs":[]`) {
 		t.Fatalf("empty catalog lineup = %s", body)
+	}
+	for _, channel := range lineup.Items {
+		if len(channel.Programs) != 0 {
+			t.Fatalf("channel %q scheduled %d programs from an empty catalog", channel.Key, len(channel.Programs))
+		}
 	}
 }

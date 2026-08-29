@@ -66,7 +66,7 @@ func Backup(ctx context.Context, source, destination string) error {
 	return nil
 }
 
-const currentSchemaVersion = 15
+const currentSchemaVersion = 16
 
 func (s *Store) ensureSchema() error {
 	version, err := schemaVersion(s.db)
@@ -231,9 +231,6 @@ CREATE TABLE channels (
     number INTEGER NOT NULL UNIQUE,
     key TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('show', 'genre', 'hdr', 'mix')),
-    item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
-    genre_id INTEGER REFERENCES genres(id),
     created_at TEXT NOT NULL
 );
 CREATE TABLE channel_programs (
@@ -245,6 +242,14 @@ CREATE TABLE channel_programs (
 );
 CREATE INDEX channel_programs_channel_idx ON channel_programs(channel_id, starts_at);
 CREATE INDEX channel_programs_ends_idx ON channel_programs(ends_at);
+CREATE TABLE channel_cursors (
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    cycle INTEGER NOT NULL,
+    cycle_started_at TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, source)
+);
 `
 	tx, err := db.Begin()
 	if err != nil {

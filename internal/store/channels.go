@@ -24,27 +24,14 @@ func ParseChannelTime(value string) (time.Time, error) {
 	return parsed.UTC(), nil
 }
 
-// Channel is one generated linear channel. A number is assigned when a key
-// first appears and is never reused, so a channel a viewer has learned keeps
-// its place even as the lineup grows.
+// Channel is one lineup entry as the catalog holds it. A number is assigned
+// when a key first appears and is never reused, so a channel a viewer has
+// learned keeps its place even as the lineup changes around it.
 type Channel struct {
 	ID     int64  `json:"id"`
 	Number int    `json:"number"`
 	Key    string `json:"key"`
 	Name   string `json:"name"`
-	Kind   string `json:"kind"`
-	// ItemID names the show behind a show channel and GenreID the genre behind
-	// a genre channel. Both are zero for the hdr and mix channels.
-	ItemID  int64 `json:"-"`
-	GenreID int64 `json:"-"`
-}
-
-// ChannelCandidate is a show or genre that qualifies for a channel, with the
-// count that ranked it.
-type ChannelCandidate struct {
-	ID    int64
-	Name  string
-	Count int
 }
 
 // ChannelItem is a schedulable item: what laying out a program needs and
@@ -52,6 +39,23 @@ type ChannelCandidate struct {
 type ChannelItem struct {
 	ItemID     int64
 	DurationMS int64
+}
+
+// ChannelCursor is a source's place in its run: the last item it aired, the
+// cycle that item aired in, and when that cycle began, which is what lets a
+// shuffled source skip what another block of its channel has aired since.
+type ChannelCursor struct {
+	Source         string
+	Cycle          int
+	CycleStartedAt string
+	ItemID         int64
+}
+
+// AiredProgram is one program in a channel's history: enough to tell whether
+// an item has aired since a moment.
+type AiredProgram struct {
+	ItemID   int64
+	StartsAt string
 }
 
 // ScheduledProgram is one program about to be written to a channel.
@@ -77,70 +81,12 @@ type ChannelProgram struct {
 	MediaPath string
 }
 
-// channelEligibility is what every channel can schedule: an available movie or
-// episode with a file long enough to occupy a slot.
-const channelEligibility = `i.available = 1 AND i.kind IN ('movie', 'episode') AND m.duration_ms > 0`
-
-// firstVideoDynamicRange is the file's first video stream classification, which
-// is what decides whether an item belongs on the HDR channel.
-const firstVideoDynamicRange = `(SELECT stream.dynamic_range FROM media_streams stream
-        WHERE stream.media_file_id = m.id AND stream.kind = 'video'
-        ORDER BY stream.stream_index LIMIT 1)`
-
-// TopChannelShows ranks shows by how many episodes they can actually air.
-// Specials are excluded because a show channel skips them.
-func (s *Store) TopChannelShows(ctx context.Context, limit int) ([]ChannelCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT show.id, show.title, COUNT(*)
-FROM items i
-JOIN media_files m ON m.item_id = i.id
-JOIN items season ON season.id = i.parent_id
-JOIN items show ON show.id = season.parent_id
-WHERE `+channelEligibility+` AND i.kind = 'episode' AND i.season_number > 0 AND show.available = 1
-GROUP BY show.id
-ORDER BY COUNT(*) DESC, show.title COLLATE NOCASE, show.id
-LIMIT ?`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("rank channel shows: %w", err)
-	}
-	return scanChannelCandidates(rows, "show")
-}
-
-// TopChannelMovieGenres ranks genres by how many playable movies carry them.
-func (s *Store) TopChannelMovieGenres(ctx context.Context, limit int) ([]ChannelCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT g.id, g.name, COUNT(*)
-FROM items i
-JOIN media_files m ON m.item_id = i.id
-JOIN item_genres ig ON ig.item_id = i.id
-JOIN genres g ON g.id = ig.genre_id
-WHERE `+channelEligibility+` AND i.kind = 'movie'
-GROUP BY g.id
-ORDER BY COUNT(*) DESC, g.name COLLATE NOCASE, g.id
-LIMIT ?`, limit)
-	if err != nil {
-		return nil, fmt.Errorf("rank channel genres: %w", err)
-	}
-	return scanChannelCandidates(rows, "genre")
-}
-
-func scanChannelCandidates(rows *sql.Rows, kind string) ([]ChannelCandidate, error) {
-	defer func() { _ = rows.Close() }()
-	var result []ChannelCandidate
-	for rows.Next() {
-		var candidate ChannelCandidate
-		if err := rows.Scan(&candidate.ID, &candidate.Name, &candidate.Count); err != nil {
-			return nil, fmt.Errorf("scan channel %s candidate: %w", kind, err)
-		}
-		result = append(result, candidate)
-	}
-	return result, rows.Err()
-}
+// channelEligibility is what every channel can schedule: an available item
+// with a file long enough to occupy a slot.
+const channelEligibility = `i.available = 1 AND m.duration_ms > 0`
 
 func (s *Store) Channels(ctx context.Context) ([]Channel, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, number, key, name, kind, COALESCE(item_id, 0), COALESCE(genre_id, 0)
-FROM channels ORDER BY number`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, number, key, name FROM channels ORDER BY number`)
 	if err != nil {
 		return nil, fmt.Errorf("list channels: %w", err)
 	}
@@ -148,8 +94,7 @@ FROM channels ORDER BY number`)
 	result := make([]Channel, 0)
 	for rows.Next() {
 		var channel Channel
-		if err := rows.Scan(&channel.ID, &channel.Number, &channel.Key, &channel.Name,
-			&channel.Kind, &channel.ItemID, &channel.GenreID); err != nil {
+		if err := rows.Scan(&channel.ID, &channel.Number, &channel.Key, &channel.Name); err != nil {
 			return nil, fmt.Errorf("scan channel: %w", err)
 		}
 		result = append(result, channel)
@@ -158,29 +103,21 @@ FROM channels ORDER BY number`)
 }
 
 // CreateChannel adds a channel at the next unused number. Numbers are never
-// reused, so a channel that stops qualifying does not hand its number to a
+// reused, so a channel that leaves the lineup does not hand its number to a
 // later one.
-func (s *Store) CreateChannel(ctx context.Context, channel Channel, createdAt string) (Channel, error) {
+func (s *Store) CreateChannel(ctx context.Context, key, name, createdAt string) (Channel, error) {
+	channel := Channel{Key: key, Name: name}
 	err := s.db.QueryRowContext(ctx, `
-INSERT INTO channels(number, key, name, kind, item_id, genre_id, created_at)
-VALUES ((SELECT COALESCE(MAX(number), 0) + 1 FROM channels), ?, ?, ?, ?, ?, ?)
-RETURNING id, number`, channel.Key, channel.Name, channel.Kind,
-		nullableID(channel.ItemID), nullableID(channel.GenreID), createdAt).
-		Scan(&channel.ID, &channel.Number)
+INSERT INTO channels(number, key, name, created_at)
+VALUES ((SELECT COALESCE(MAX(number), 0) + 1 FROM channels), ?, ?, ?)
+RETURNING id, number`, key, name, createdAt).Scan(&channel.ID, &channel.Number)
 	if err != nil {
-		return Channel{}, fmt.Errorf("create channel %q: %w", channel.Key, err)
+		return Channel{}, fmt.Errorf("create channel %q: %w", key, err)
 	}
 	return channel, nil
 }
 
-func nullableID(id int64) any {
-	if id == 0 {
-		return nil
-	}
-	return id
-}
-
-// RenameChannel follows the catalog when a show or genre is renamed.
+// RenameChannel follows the lineup when a channel is renamed.
 func (s *Store) RenameChannel(ctx context.Context, id int64, name string) error {
 	if _, err := s.db.ExecContext(ctx, `UPDATE channels SET name = ? WHERE id = ?`, name, id); err != nil {
 		return fmt.Errorf("rename channel %d: %w", id, err)
@@ -188,37 +125,127 @@ func (s *Store) RenameChannel(ctx context.Context, id int64, name string) error 
 	return nil
 }
 
-// ChannelEligibleItems returns what a channel can schedule, in the order the
-// generator walks it: season and episode order for a show channel, id order
-// elsewhere so a seeded pick is reproducible.
-func (s *Store) ChannelEligibleItems(ctx context.Context, channel Channel) ([]ChannelItem, error) {
-	predicate := ""
-	order := "i.id"
+// DeleteChannel drops a channel the lineup no longer names, with its programs
+// and cursors.
+func (s *Store) DeleteChannel(ctx context.Context, id int64) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel %d: %w", id, err)
+	}
+	return nil
+}
+
+// ChannelShowEpisodes lists a show's airable episodes in the order a channel
+// runs them: seasons in order, then the specials.
+func (s *Store) ChannelShowEpisodes(ctx context.Context, tmdbID int64) ([]ChannelItem, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT i.id, m.duration_ms
+FROM items i
+JOIN media_files m ON m.item_id = i.id
+JOIN items season ON season.id = i.parent_id
+JOIN items show ON show.id = season.parent_id
+WHERE `+channelEligibility+` AND i.kind = 'episode'
+    AND show.kind = 'show' AND show.available = 1 AND show.tmdb_id = ?
+ORDER BY i.season_number = 0, i.season_number, i.episode_number, i.id`, tmdbID)
+	if err != nil {
+		return nil, fmt.Errorf("list channel episodes of show %d: %w", tmdbID, err)
+	}
+	return scanChannelItems(rows)
+}
+
+// ChannelTitles lists the airable movies carrying the given TMDB ids, in the
+// order the ids are given. Ids with nothing behind them are simply absent.
+func (s *Store) ChannelTitles(ctx context.Context, tmdbIDs []int64) ([]ChannelItem, error) {
+	if len(tmdbIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(tmdbIDs))
+	args := make([]any, len(tmdbIDs))
+	for index, tmdbID := range tmdbIDs {
+		placeholders[index] = "?"
+		args[index] = tmdbID
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT i.id, m.duration_ms, i.tmdb_id
+FROM items i JOIN media_files m ON m.item_id = i.id
+WHERE `+channelEligibility+` AND i.kind = 'movie' AND i.tmdb_id IN (`+strings.Join(placeholders, ",")+`)
+ORDER BY i.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list channel titles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	byTMDB := make(map[int64][]ChannelItem)
+	for rows.Next() {
+		var item ChannelItem
+		var tmdbID int64
+		if err := rows.Scan(&item.ItemID, &item.DurationMS, &tmdbID); err != nil {
+			return nil, fmt.Errorf("scan channel title: %w", err)
+		}
+		byTMDB[tmdbID] = append(byTMDB[tmdbID], item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var result []ChannelItem
+	for _, tmdbID := range tmdbIDs {
+		result = append(result, byTMDB[tmdbID]...)
+	}
+	return result, nil
+}
+
+// ChannelMovies lists the airable movies from the movies library carrying any
+// of the genres, optionally limited to the given content ratings. The order is
+// by id; a genre pool is always shuffled.
+func (s *Store) ChannelMovies(ctx context.Context, genres, ratings []string) ([]ChannelItem, error) {
+	if len(genres) == 0 {
+		return nil, nil
+	}
 	var args []any
-	switch channel.Kind {
-	case "show":
-		predicate = ` AND i.kind = 'episode' AND i.season_number > 0
-    AND i.parent_id IN (SELECT id FROM items WHERE parent_id = ? AND kind = 'season')`
-		order = "i.season_number, i.episode_number, i.id"
-		args = append(args, channel.ItemID)
-	case "genre":
-		predicate = ` AND EXISTS (SELECT 1 FROM item_genres ig
-        WHERE ig.item_id = i.id AND ig.genre_id = ?)`
-		args = append(args, channel.GenreID)
-	case "hdr":
-		predicate = ` AND ` + firstVideoDynamicRange + ` IN ('hdr', 'dolby_vision')`
-	case "mix":
-	default:
-		return nil, fmt.Errorf("unknown channel kind %q", channel.Kind)
+	genrePlaceholders := make([]string, len(genres))
+	for index, genre := range genres {
+		genrePlaceholders[index] = "?"
+		args = append(args, genre)
+	}
+	ratingPredicate := ""
+	if len(ratings) > 0 {
+		ratingPlaceholders := make([]string, len(ratings))
+		for index, rating := range ratings {
+			ratingPlaceholders[index] = "?"
+			args = append(args, rating)
+		}
+		ratingPredicate = ` AND i.content_rating IN (` + strings.Join(ratingPlaceholders, ",") + `)`
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT i.id, m.duration_ms
-FROM items i JOIN media_files m ON m.item_id = i.id
-WHERE `+channelEligibility+predicate+`
-ORDER BY `+order, args...)
+FROM items i
+JOIN media_files m ON m.item_id = i.id
+JOIN libraries l ON l.id = i.library_id
+WHERE `+channelEligibility+` AND i.kind = 'movie' AND l.kind = 'movies'
+    AND EXISTS (SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
+        WHERE ig.item_id = i.id AND g.name IN (`+strings.Join(genrePlaceholders, ",")+`))`+
+		ratingPredicate+`
+ORDER BY i.id`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list channel %q items: %w", channel.Key, err)
+		return nil, fmt.Errorf("list channel movies: %w", err)
 	}
+	return scanChannelItems(rows)
+}
+
+// ChannelShorts lists every airable film in the shorts library.
+func (s *Store) ChannelShorts(ctx context.Context) ([]ChannelItem, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT i.id, m.duration_ms
+FROM items i
+JOIN media_files m ON m.item_id = i.id
+JOIN libraries l ON l.id = i.library_id
+WHERE `+channelEligibility+` AND i.kind = 'movie' AND l.kind = 'shorts'
+ORDER BY i.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list channel shorts: %w", err)
+	}
+	return scanChannelItems(rows)
+}
+
+func scanChannelItems(rows *sql.Rows) ([]ChannelItem, error) {
 	defer func() { _ = rows.Close() }()
 	var result []ChannelItem
 	for rows.Next() {
@@ -231,36 +258,61 @@ ORDER BY `+order, args...)
 	return result, rows.Err()
 }
 
-// ChannelProgramItems lists what a channel currently has scheduled, oldest
-// first, which is both the set a shuffled channel avoids repeating and the
-// trail a show channel continues from.
-func (s *Store) ChannelProgramItems(ctx context.Context, channelID int64) ([]int64, error) {
+// ChannelCursors returns where each of a channel's sources left off.
+func (s *Store) ChannelCursors(ctx context.Context, channelID int64) ([]ChannelCursor, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT item_id FROM channel_programs WHERE channel_id = ? ORDER BY starts_at, id`, channelID)
+SELECT source, cycle, cycle_started_at, item_id FROM channel_cursors WHERE channel_id = ? ORDER BY source`, channelID)
 	if err != nil {
-		return nil, fmt.Errorf("list channel %d programs: %w", channelID, err)
+		return nil, fmt.Errorf("list channel %d cursors: %w", channelID, err)
 	}
 	defer func() { _ = rows.Close() }()
-	var result []int64
+	var result []ChannelCursor
 	for rows.Next() {
-		var itemID int64
-		if err := rows.Scan(&itemID); err != nil {
-			return nil, fmt.Errorf("scan channel program item: %w", err)
+		var cursor ChannelCursor
+		if err := rows.Scan(&cursor.Source, &cursor.Cycle, &cursor.CycleStartedAt, &cursor.ItemID); err != nil {
+			return nil, fmt.Errorf("scan channel cursor: %w", err)
 		}
-		result = append(result, itemID)
+		result = append(result, cursor)
 	}
 	return result, rows.Err()
 }
 
-// ChannelScheduleEnd reports when a channel's schedule runs out, or an empty
-// string when it has no programs.
-func (s *Store) ChannelScheduleEnd(ctx context.Context, channelID int64) (string, error) {
-	var end sql.NullString
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT MAX(ends_at) FROM channel_programs WHERE channel_id = ?`, channelID).Scan(&end); err != nil {
-		return "", fmt.Errorf("read channel %d schedule end: %w", channelID, err)
+// ChannelAired lists everything a channel has stored, oldest first: its
+// retained history and its scheduled tail alike, since to a source planning
+// ahead a program already laid down has aired.
+func (s *Store) ChannelAired(ctx context.Context, channelID int64) ([]AiredProgram, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT item_id, starts_at FROM channel_programs WHERE channel_id = ? ORDER BY starts_at, id`, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("list channel %d history: %w", channelID, err)
 	}
-	return end.String, nil
+	defer func() { _ = rows.Close() }()
+	var result []AiredProgram
+	for rows.Next() {
+		var program AiredProgram
+		if err := rows.Scan(&program.ItemID, &program.StartsAt); err != nil {
+			return nil, fmt.Errorf("scan channel history: %w", err)
+		}
+		result = append(result, program)
+	}
+	return result, rows.Err()
+}
+
+// ChannelLastProgram reports the item and end of the latest program a channel
+// has stored, or zero and an empty string when it has none.
+func (s *Store) ChannelLastProgram(ctx context.Context, channelID int64) (int64, string, error) {
+	var itemID int64
+	var end string
+	err := s.db.QueryRowContext(ctx, `
+SELECT item_id, ends_at FROM channel_programs WHERE channel_id = ?
+ORDER BY ends_at DESC, id DESC LIMIT 1`, channelID).Scan(&itemID, &end)
+	if err == sql.ErrNoRows {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("read channel %d last program: %w", channelID, err)
+	}
+	return itemID, end, nil
 }
 
 // ChannelScheduleReach reports how far the whole lineup is scheduled: the
@@ -278,9 +330,13 @@ FROM (SELECT MAX(ends_at) AS last_end FROM channel_programs GROUP BY channel_id)
 	return reach, nil
 }
 
-// AppendChannelPrograms writes a channel's new tail in one transaction.
-func (s *Store) AppendChannelPrograms(ctx context.Context, channelID int64, programs []ScheduledProgram) error {
-	if len(programs) == 0 {
+// AppendChannelPrograms writes a channel's new tail and the cursors that
+// produced it in one transaction, so a crash between the two cannot make a
+// source replay what it already scheduled.
+func (s *Store) AppendChannelPrograms(
+	ctx context.Context, channelID int64, programs []ScheduledProgram, cursors []ChannelCursor,
+) error {
+	if len(programs) == 0 && len(cursors) == 0 {
 		return nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -293,6 +349,15 @@ func (s *Store) AppendChannelPrograms(ctx context.Context, channelID int64, prog
 INSERT INTO channel_programs(channel_id, item_id, starts_at, ends_at) VALUES (?, ?, ?, ?)`,
 			channelID, program.ItemID, program.StartsAt, program.EndsAt); err != nil {
 			return fmt.Errorf("append channel %d program: %w", channelID, err)
+		}
+	}
+	for _, cursor := range cursors {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO channel_cursors(channel_id, source, cycle, cycle_started_at, item_id) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(channel_id, source) DO UPDATE SET cycle = excluded.cycle,
+    cycle_started_at = excluded.cycle_started_at, item_id = excluded.item_id`,
+			channelID, cursor.Source, cursor.Cycle, cursor.CycleStartedAt, cursor.ItemID); err != nil {
+			return fmt.Errorf("save channel %d cursor %q: %w", channelID, cursor.Source, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

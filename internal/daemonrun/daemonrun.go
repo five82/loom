@@ -225,6 +225,7 @@ func updateChannels(ctx context.Context, lineup *channels.Generator, logger *slo
 		return
 	}
 	logger.Info("channel schedule updated", "channels_created", stats.ChannelsCreated,
+		"channels_removed", stats.ChannelsRemoved,
 		"programs_pruned", stats.ProgramsPruned, "programs_added", stats.ProgramsAdded)
 }
 

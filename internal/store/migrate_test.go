@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,115 +61,6 @@ PRAGMA user_version = 1;`); err != nil {
 	}
 	if version != 3 || value != "keep me" || selected != 1 {
 		t.Fatalf("migrated state = version %d, value %q, selected %d", version, value, selected)
-	}
-}
-
-func TestMigrate12To13PreservesStateAndSeedsFeaturedRotation(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "loom.db")
-	catalog, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	libraryID, scanID, err := catalog.StartScan(ctx, "movies", "/movies")
-	if err != nil {
-		t.Fatal(err)
-	}
-	eligible, err := catalog.UpsertItem(ctx, ItemInput{
-		LibraryID: libraryID, SourceKey: "Arrival", Kind: "movie", Title: "Arrival", ScanID: scanID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	documentary, err := catalog.UpsertItem(ctx, ItemInput{
-		LibraryID: libraryID, SourceKey: "Documentary", Kind: "movie", Title: "Documentary", ScanID: scanID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := catalog.UpdateMetadata(ctx, eligible, MetadataUpdate{
-		TMDBID: 1, VoteAverage: 8.0, Genres: []Genre{{ID: 18, Name: "Drama"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := catalog.UpdateMetadata(ctx, documentary, MetadataUpdate{
-		TMDBID: 2, VoteAverage: 9.0, Genres: []Genre{{ID: 99, Name: "Documentary"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := catalog.UpsertMedia(ctx, MediaFile{
-		ItemID: eligible, Path: "/movies/Arrival.mkv", Size: 1, MTimeNS: 1,
-		DurationMS: 600_000, LastSeenScanID: scanID,
-	}, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := catalog.FinishScan(ctx, libraryID, scanID, 2, 2, 0, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := catalog.SetPlayed(ctx, eligible); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := catalog.UpsertImage(ctx, Image{
-		ItemID: eligible, Kind: "poster", Path: "/state/poster.jpg", SourceURL: "https://example/poster.jpg",
-		Tag: "manual", ContentType: "image/jpeg", ManuallySelected: true, UpdatedAt: now(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := catalog.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Removing the tables added after version 12 recreates the exact version-12
-	// schema shape while retaining representative catalog, playback, and
-	// artwork rows.
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`
-DROP TABLE channel_programs;
-DROP TABLE channels;
-DROP TABLE featured_pick;
-DROP TABLE featured_rotation;
-PRAGMA user_version = 12;`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := Migrate(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.From != 12 || result.To != currentSchemaVersion || result.Created {
-		t.Fatalf("migration result = %+v", result)
-	}
-	migrated, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = migrated.Close() }()
-	var playbackRows, manualArtwork, rotationRows int
-	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM playback_state`).Scan(&playbackRows); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM images WHERE manually_selected = 1`).Scan(&manualArtwork); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM featured_rotation`).Scan(&rotationRows); err != nil {
-		t.Fatal(err)
-	}
-	if playbackRows != 1 || manualArtwork != 1 || rotationRows != 1 {
-		t.Fatalf("migrated rows = playback %d, manual artwork %d, rotation %d",
-			playbackRows, manualArtwork, rotationRows)
-	}
-	var rotatedID int64
-	if err := migrated.db.QueryRow(`SELECT item_id FROM featured_rotation`).Scan(&rotatedID); err != nil {
-		t.Fatal(err)
-	}
-	if rotatedID != eligible {
-		t.Fatalf("seeded featured item = %d, want eligible movie %d", rotatedID, eligible)
 	}
 }
 
@@ -255,84 +147,49 @@ func TestMigrateRejectsSchemaWithoutAPath(t *testing.T) {
 	}
 }
 
-func TestMigrate13To14MarksShowDetailsForReload(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "loom.db")
-	catalog, err := Open(path)
+// assertChannelTablesUsable checks the current channel tables on a migrated
+// catalog: they are empty, a channel takes a number, and its programs and
+// cursors follow the channel out of the catalog.
+func assertChannelTablesUsable(t *testing.T, ctx context.Context, migrated *Store, ids map[string]int64) {
+	t.Helper()
+	channels, err := migrated.Channels(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids := seedMixedCatalog(t, ctx, catalog)
-	if err := catalog.UpdateMetadata(ctx, ids["movie1"], MetadataUpdate{TMDBID: 1, Title: "Movie"}); err != nil {
-		t.Fatal(err)
+	if len(channels) != 0 {
+		t.Fatalf("migrated catalog carries channels %+v", channels)
 	}
-	if err := catalog.UpdateMetadata(ctx, ids["showA"], MetadataUpdate{TMDBID: 2, Title: "Show A"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := catalog.SetProgress(ctx, ids["showA-e1"], 300_000, 1_200_000); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := catalog.UpsertImage(ctx, Image{
-		ItemID: ids["showA"], Kind: "poster", Path: "/state/poster.jpg", SourceURL: "https://example/poster.jpg",
-		Tag: "manual", ContentType: "image/jpeg", ManuallySelected: true, UpdatedAt: now(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := catalog.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := sql.Open("sqlite", path)
+	channel, err := migrated.CreateChannel(ctx, "sitcoms", "Sitcoms", ChannelTime(time.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`
-DROP TABLE channel_programs;
-DROP TABLE channels;
-PRAGMA user_version = 13`); err != nil {
+	if channel.Number != 1 {
+		t.Fatalf("first channel number = %d, want 1", channel.Number)
+	}
+	if err := migrated.AppendChannelPrograms(ctx, channel.ID, []ScheduledProgram{{
+		ItemID: ids["showA-e1"], StartsAt: "2026-08-29T20:00:00Z", EndsAt: "2026-08-29T20:30:00Z",
+	}}, []ChannelCursor{{Source: "show-a", Cycle: 0, ItemID: ids["showA-e1"]}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Close(); err != nil {
+	if _, err := migrated.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, channel.ID); err != nil {
 		t.Fatal(err)
 	}
-
-	result, err := Migrate(ctx, path)
-	if err != nil {
+	var programRows, cursorRows int
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM channel_programs`).Scan(&programRows); err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 13 || result.To != currentSchemaVersion || result.Created {
-		t.Fatalf("migration result = %+v", result)
-	}
-	migrated, err := Open(path)
-	if err != nil {
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM channel_cursors`).Scan(&cursorRows); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = migrated.Close() }()
-	var playbackRows, manualArtwork int
-	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM playback_state`).Scan(&playbackRows); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM images WHERE manually_selected = 1`).Scan(&manualArtwork); err != nil {
-		t.Fatal(err)
-	}
-	if playbackRows != 1 || manualArtwork != 1 {
-		t.Fatalf("migrated rows = playback %d, manual artwork %d", playbackRows, manualArtwork)
-	}
-	// Matched shows go back to awaiting details so the next scan stores their
-	// genres; an unmatched show has nothing to reload, and movies already
-	// carry theirs.
-	for name, want := range map[string]bool{"movie1": true, "showA": false, "showB": false} {
-		item, err := migrated.Item(ctx, ids[name])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if item.DetailsLoaded != want {
-			t.Fatalf("%s details loaded = %v, want %v", name, item.DetailsLoaded, want)
-		}
+	if programRows != 0 || cursorRows != 0 {
+		t.Fatalf("rows left after their channel was removed = %d programs, %d cursors", programRows, cursorRows)
 	}
 }
 
-func TestMigrate14To15AddsChannelTables(t *testing.T) {
+// Version 15 held the proof-of-concept lineup, ranked from the catalog, and
+// its schedule. Both are dropped and rebuilt by the daemon; everything else in
+// the catalog is left alone.
+func TestMigrate15To16ReplacesChannelTables(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "loom.db")
 	catalog, err := Open(path)
@@ -356,16 +213,38 @@ func TestMigrate14To15AddsChannelTables(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Removing the version-15-only tables recreates the exact version-14 schema
-	// shape while retaining representative catalog, playback, and artwork rows.
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
+DROP TABLE channel_cursors;
 DROP TABLE channel_programs;
 DROP TABLE channels;
-PRAGMA user_version = 14;`); err != nil {
+CREATE TABLE channels (
+    id INTEGER PRIMARY KEY,
+    number INTEGER NOT NULL UNIQUE,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('show', 'genre', 'hdr', 'mix')),
+    item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+    genre_id INTEGER REFERENCES genres(id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE channel_programs (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    starts_at TEXT NOT NULL,
+    ends_at TEXT NOT NULL
+);
+CREATE INDEX channel_programs_channel_idx ON channel_programs(channel_id, starts_at);
+CREATE INDEX channel_programs_ends_idx ON channel_programs(ends_at);
+INSERT INTO channels(number, key, name, kind, item_id, created_at)
+VALUES (1, 'show:` + fmt.Sprint(ids["showA"]) + `', 'Show A', 'show', ` + fmt.Sprint(ids["showA"]) + `, '2026-08-29T20:00:00Z');
+INSERT INTO channel_programs(channel_id, item_id, starts_at, ends_at)
+VALUES (1, ` + fmt.Sprint(ids["showA-e1"]) + `, '2026-08-29T20:00:00Z', '2026-08-29T20:30:00Z');
+PRAGMA user_version = 15;`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -376,7 +255,7 @@ PRAGMA user_version = 14;`); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 14 || result.To != currentSchemaVersion || result.Created {
+	if result.From != 15 || result.To != currentSchemaVersion || result.Created {
 		t.Fatalf("migration result = %+v", result)
 	}
 	migrated, err := Open(path)
@@ -398,31 +277,5 @@ PRAGMA user_version = 14;`); err != nil {
 		t.Fatalf("migrated rows = playback %d, manual artwork %d, items %d",
 			playbackRows, manualArtwork, itemRows)
 	}
-
-	// The new tables are empty and usable: a channel takes a number, and its
-	// programs follow the channel out of the catalog.
-	channel, err := migrated.CreateChannel(ctx, Channel{
-		Key: "show:1", Name: "Show A", Kind: "show", ItemID: ids["showA"],
-	}, ChannelTime(time.Now()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if channel.Number != 1 {
-		t.Fatalf("first channel number = %d, want 1", channel.Number)
-	}
-	if err := migrated.AppendChannelPrograms(ctx, channel.ID, []ScheduledProgram{{
-		ItemID: ids["showA-e1"], StartsAt: "2026-08-29T20:00:00Z", EndsAt: "2026-08-29T20:30:00Z",
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := migrated.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, channel.ID); err != nil {
-		t.Fatal(err)
-	}
-	var programRows int
-	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM channel_programs`).Scan(&programRows); err != nil {
-		t.Fatal(err)
-	}
-	if programRows != 0 {
-		t.Fatalf("programs left after their channel was removed = %d", programRows)
-	}
+	assertChannelTablesUsable(t, ctx, migrated, ids)
 }

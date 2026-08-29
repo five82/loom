@@ -55,11 +55,11 @@ The production and test catalogs contain durable playback state and manual
 artwork selections. `loom developer reset` is destructive and is not a normal
 schema upgrade path.
 
-- Version 12 is the migration baseline. Add each future upgrade to
+- Version 15 is the migration baseline; older upgrades were dropped once the
+  only instance had passed them. Add each future upgrade to
   `internal/store/migrate.go`, advance the current schema and fresh-schema SQL,
-  and keep the migration and its tests permanently. Old migrations are inert
-  on current databases and allow either instance or an older backup to catch
-  up later.
+  and keep the migration and its tests until every instance and backup is
+  past them.
 - A normal `loom start` creates a fresh database at the current schema, but it
   refuses an existing database that has a pending migration. `loom migrate`
   is the explicit upgrade path and must run while the daemon is stopped. Each
