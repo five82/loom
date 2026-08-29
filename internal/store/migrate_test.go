@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMigrateCreatesAndAcceptsCurrentSchema(t *testing.T) {
@@ -117,13 +118,16 @@ func TestMigrate12To13PreservesStateAndSeedsFeaturedRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Removing the version-13-only tables recreates the exact version-12 schema
-	// shape while retaining representative catalog, playback, and artwork rows.
+	// Removing the tables added after version 12 recreates the exact version-12
+	// schema shape while retaining representative catalog, playback, and
+	// artwork rows.
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`
+DROP TABLE channel_programs;
+DROP TABLE channels;
 DROP TABLE featured_pick;
 DROP TABLE featured_rotation;
 PRAGMA user_version = 12;`); err != nil {
@@ -282,7 +286,10 @@ func TestMigrate13To14MarksShowDetailsForReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`PRAGMA user_version = 13`); err != nil {
+	if _, err := db.Exec(`
+DROP TABLE channel_programs;
+DROP TABLE channels;
+PRAGMA user_version = 13`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -293,7 +300,7 @@ func TestMigrate13To14MarksShowDetailsForReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.From != 13 || result.To != 14 || result.Created {
+	if result.From != 13 || result.To != currentSchemaVersion || result.Created {
 		t.Fatalf("migration result = %+v", result)
 	}
 	migrated, err := Open(path)
@@ -322,5 +329,100 @@ func TestMigrate13To14MarksShowDetailsForReload(t *testing.T) {
 		if item.DetailsLoaded != want {
 			t.Fatalf("%s details loaded = %v, want %v", name, item.DetailsLoaded, want)
 		}
+	}
+}
+
+func TestMigrate14To15AddsChannelTables(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "loom.db")
+	catalog, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := seedMixedCatalog(t, ctx, catalog)
+	if _, err := catalog.SetProgress(ctx, ids["showA-e1"], 300_000, 1_200_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.SetPlayed(ctx, ids["movie1"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertImage(ctx, Image{
+		ItemID: ids["showA"], Kind: "poster", Path: "/state/poster.jpg", SourceURL: "https://example/poster.jpg",
+		Tag: "manual", ContentType: "image/jpeg", ManuallySelected: true, UpdatedAt: now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Removing the version-15-only tables recreates the exact version-14 schema
+	// shape while retaining representative catalog, playback, and artwork rows.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+DROP TABLE channel_programs;
+DROP TABLE channels;
+PRAGMA user_version = 14;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Migrate(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 14 || result.To != currentSchemaVersion || result.Created {
+		t.Fatalf("migration result = %+v", result)
+	}
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrated.Close() }()
+	var playbackRows, manualArtwork, itemRows int
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM playback_state`).Scan(&playbackRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM images WHERE manually_selected = 1`).Scan(&manualArtwork); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&itemRows); err != nil {
+		t.Fatal(err)
+	}
+	if playbackRows != 2 || manualArtwork != 1 || itemRows != 10 {
+		t.Fatalf("migrated rows = playback %d, manual artwork %d, items %d",
+			playbackRows, manualArtwork, itemRows)
+	}
+
+	// The new tables are empty and usable: a channel takes a number, and its
+	// programs follow the channel out of the catalog.
+	channel, err := migrated.CreateChannel(ctx, Channel{
+		Key: "show:1", Name: "Show A", Kind: "show", ItemID: ids["showA"],
+	}, ChannelTime(time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.Number != 1 {
+		t.Fatalf("first channel number = %d, want 1", channel.Number)
+	}
+	if err := migrated.AppendChannelPrograms(ctx, channel.ID, []ScheduledProgram{{
+		ItemID: ids["showA-e1"], StartsAt: "2026-08-29T20:00:00Z", EndsAt: "2026-08-29T20:30:00Z",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrated.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, channel.ID); err != nil {
+		t.Fatal(err)
+	}
+	var programRows int
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM channel_programs`).Scan(&programRows); err != nil {
+		t.Fatal(err)
+	}
+	if programRows != 0 {
+		t.Fatalf("programs left after their channel was removed = %d", programRows)
 	}
 }

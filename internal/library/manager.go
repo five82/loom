@@ -16,6 +16,11 @@ type Manager struct {
 	requests chan string
 	busy     atomic.Bool
 
+	// afterScan runs when a scan finishes, which is where the parts of Loom
+	// generated from the catalog catch up. There is one listener and no event
+	// bus; a scan simply calls it.
+	afterScan func(context.Context)
+
 	mu          sync.RWMutex
 	library     string
 	startedAt   string
@@ -37,6 +42,10 @@ func NewManager(scanner *Scanner, interval time.Duration, logger *slog.Logger) *
 		requests: make(chan string, 1),
 	}
 }
+
+// AfterScan registers the hook every finished scan calls. It is set once
+// during startup, before Run.
+func (m *Manager) AfterScan(hook func(context.Context)) { m.afterScan = hook }
 
 // Trigger queues a scan and reports false if another scan is running or queued.
 func (m *Manager) Trigger(library string) bool {
@@ -103,4 +112,10 @@ func (m *Manager) runScan(ctx context.Context, library string) {
 	m.startedAt = ""
 	m.mu.Unlock()
 	m.busy.Store(false)
+
+	// A failed scan can still have committed part of the catalog, so the hook
+	// runs either way.
+	if m.afterScan != nil {
+		m.afterScan(ctx)
+	}
 }

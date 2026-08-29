@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/five82/loom/internal/channels"
 	"github.com/five82/loom/internal/collections"
 	"github.com/five82/loom/internal/images"
 	"github.com/five82/loom/internal/library"
@@ -26,25 +27,28 @@ type ListenAddresses struct {
 }
 
 type API struct {
-	store     *store.Store
-	scans     *library.Manager
-	metadata  *metadata.Service
-	shutdown  chan<- struct{}
-	listeners ListenAddresses
-	public    *http.ServeMux
+	store            *store.Store
+	scans            *library.Manager
+	metadata         *metadata.Service
+	channelGenerator *channels.Generator
+	shutdown         chan<- struct{}
+	listeners        ListenAddresses
+	public           *http.ServeMux
 }
 
 func New(catalog *store.Store, scans *library.Manager, metadataService *metadata.Service,
-	shutdown chan<- struct{}, listeners ListenAddresses,
+	channelGenerator *channels.Generator, shutdown chan<- struct{}, listeners ListenAddresses,
 ) *API {
 	api := &API{
 		store: catalog, scans: scans, metadata: metadataService,
-		shutdown: shutdown, listeners: listeners, public: http.NewServeMux(),
+		channelGenerator: channelGenerator,
+		shutdown:         shutdown, listeners: listeners, public: http.NewServeMux(),
 	}
 	api.public.HandleFunc("GET /api/v1/health", api.health)
 	api.public.HandleFunc("GET /api/v1/libraries", api.libraries)
 	api.public.HandleFunc("GET /api/v1/genres", api.genres)
 	api.public.HandleFunc("GET /api/v1/collections", api.collections)
+	api.public.HandleFunc("GET /api/v1/channels", api.channels)
 	api.public.HandleFunc("GET /api/v1/featured-pick", api.featuredPick)
 	api.public.HandleFunc("GET /api/v1/home", api.home)
 	api.public.HandleFunc("GET /api/v1/search", api.search)

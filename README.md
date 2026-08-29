@@ -323,6 +323,7 @@ GET  /api/v1/health
 GET  /api/v1/libraries
 GET  /api/v1/genres
 GET  /api/v1/collections
+GET  /api/v1/channels?hours=24
 GET  /api/v1/featured-pick
 GET  /api/v1/home
 GET  /api/v1/search?q=pilot
@@ -427,6 +428,38 @@ ends. The pick changes at 6am and 6pm in the server's local time. Loom presents
 every eligible movie in random order before repeating one. Successful scans add
 and remove rotation members without changing the active pick, except when that
 movie has been removed from the library.
+
+The channels endpoint returns Loom's linear TV lineup: every channel, in
+ascending channel number, with the programs scheduled around now. Channels are
+generated from the catalog rather than configured - the four shows with the most
+available episodes, the four best represented movie genres, one for HDR and
+Dolby Vision, and one drawing on the whole library. A channel takes the next
+unused number the first time its key appears and keeps it; numbers are never
+reused, and a channel whose show or genre stops qualifying keeps its place
+instead of renumbering the lineup around it. Only available movies and episodes
+with a probed runtime are scheduled.
+
+Programs run back to back at their real runtime, with no slot alignment, and
+every channel is kept 24 hours ahead. A show channel airs its episodes in season
+and episode order, skips specials, and loops; every other channel picks at
+random without repeating anything still inside its stored window. Loom
+regenerates the schedule at startup, every fifteen minutes, and after every
+scan, dropping programs that ended more than six hours ago; a channel whose
+schedule ran out while Loom was down restarts from now rather than replaying the
+hours nobody watched. The endpoint regenerates on its own if it is asked before
+the schedule reaches that far, so a client can query a daemon that has only just
+started.
+
+`hours` is between 1 and 48 and defaults to 24, and the response holds every
+program overlapping the hour before `now` through that many hours after it.
+`now` is the server clock, and it and the program boundaries are whole-second
+RFC 3339 in UTC. Each program carries its item in the same shape a listing
+returns, without credits or progress, the file's first video stream, and a
+`stream_url` computed exactly like a playback response, from the file as it is
+on disk. The stream URL is absent when the file has gone missing, and an item
+that left the library keeps its programs so the client can show what it cannot
+play instead of a hole in the schedule. Warp reports no playback progress, so
+nothing on these channels counts as watched.
 
 The home endpoint returns the whole home screen in one response: the featured
 pick as `featured` (null when there is none), the `continue_watching` row capped

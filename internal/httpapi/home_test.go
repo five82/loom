@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/five82/loom/internal/channels"
 	"github.com/five82/loom/internal/library"
 	"github.com/five82/loom/internal/store"
 )
@@ -550,7 +551,7 @@ func TestHomeAPI(t *testing.T) {
 		}
 	}
 
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 

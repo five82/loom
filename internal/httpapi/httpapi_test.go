@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/five82/loom/internal/channels"
 	"github.com/five82/loom/internal/library"
 	"github.com/five82/loom/internal/metadata"
 	"github.com/five82/loom/internal/store"
@@ -30,7 +31,7 @@ func TestMediaDownloadMetadataAndVersionedResponses(t *testing.T) {
 	catalog, itemID, mediaID, contents := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
 	manager := library.NewManager(nil, 0, slog.Default())
-	api := New(catalog, manager, nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, manager, nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
@@ -131,7 +132,7 @@ func TestPlaybackReportsLiveFileVersion(t *testing.T) {
 	catalog, itemID, mediaID, contents := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
 	manager := library.NewManager(nil, 0, slog.Default())
-	api := New(catalog, manager, nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, manager, nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
@@ -192,7 +193,7 @@ func TestPlaybackReportsLiveFileVersion(t *testing.T) {
 func TestProgress(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
@@ -218,7 +219,7 @@ func TestProgress(t *testing.T) {
 func TestPlayedWrites(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
@@ -270,7 +271,7 @@ func TestPlayedWrites(t *testing.T) {
 func TestItemTechnicalMetadata(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
@@ -306,7 +307,7 @@ func TestMovieGenreAPI(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
@@ -364,7 +365,7 @@ func TestMovieGenreAPI(t *testing.T) {
 func TestSearchAPI(t *testing.T) {
 	catalog, itemID, _, _ := testCatalog(t)
 	defer func() { _ = catalog.Close() }()
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 
@@ -450,7 +451,7 @@ func TestImageSelectionAPI(t *testing.T) {
 		providerServer.URL+"/images", providerServer.Client())
 	metadataService := metadata.New(catalog, client, filepath.Join(t.TempDir(), "images"), slog.Default())
 	api := New(catalog, library.NewManager(nil, 0, slog.Default()), metadataService,
-		make(chan struct{}, 1), ListenAddresses{})
+		channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 	baseURL := server.URL + "/api/v1/items/" + strconv.FormatInt(itemID, 10) + "/images/logo"
@@ -524,7 +525,7 @@ func TestImageTagCaching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 	imageURL := server.URL + "/api/v1/images/" + strconv.FormatInt(imageID, 10)
@@ -611,7 +612,7 @@ func TestImageWidthVariants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 	imageURL := server.URL + "/api/v1/images/" + strconv.FormatInt(imageID, 10)
@@ -672,7 +673,7 @@ func TestDaemonStatusIncludesListenAddresses(t *testing.T) {
 		API: []string{"127.0.0.1:8097", "192.168.1.20:8097"}, Control: "/run/user/1000/loom.sock",
 	}
 	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil,
-		make(chan struct{}, 1), listeners)
+		channels.New(catalog), make(chan struct{}, 1), listeners)
 	server := httptest.NewServer(api.LocalHandler())
 	defer server.Close()
 
@@ -695,7 +696,7 @@ func TestScanTriggerAndStatus(t *testing.T) {
 	defer func() { _ = catalog.Close() }()
 	// A manager with no Run goroutine leaves the first triggered scan queued, which
 	// is what the busy rejection below needs.
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 	local := httptest.NewServer(api.LocalHandler())
@@ -836,7 +837,7 @@ func TestFeaturedPickAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 	response, err := http.Get(server.URL + "/api/v1/featured-pick")
@@ -914,7 +915,7 @@ func TestCollectionsServeOwnedAndDynamicMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, make(chan struct{}, 1), ListenAddresses{})
+	api := New(catalog, library.NewManager(nil, 0, slog.Default()), nil, channels.New(catalog), make(chan struct{}, 1), ListenAddresses{})
 	server := httptest.NewServer(api.PublicHandler())
 	defer server.Close()
 	response, err := http.Get(server.URL + "/api/v1/collections")

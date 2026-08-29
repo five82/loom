@@ -51,6 +51,32 @@ WHERE i.available = 1 AND i.kind = 'movie' AND l.kind = 'movies'
 	to:   14,
 	sql: `
 UPDATE items SET details_loaded = 0 WHERE kind = 'show' AND tmdb_id <> 0;`,
+}, {
+	// Warp's linear channels and their rolling schedule. Both tables are new
+	// and empty; the generator fills them from the existing catalog on the
+	// next daemon start, so no existing row is touched.
+	from: 14,
+	to:   15,
+	sql: `
+CREATE TABLE channels (
+    id INTEGER PRIMARY KEY,
+    number INTEGER NOT NULL UNIQUE,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('show', 'genre', 'hdr', 'mix')),
+    item_id INTEGER REFERENCES items(id) ON DELETE CASCADE,
+    genre_id INTEGER REFERENCES genres(id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE channel_programs (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    starts_at TEXT NOT NULL,
+    ends_at TEXT NOT NULL
+);
+CREATE INDEX channel_programs_channel_idx ON channel_programs(channel_id, starts_at);
+CREATE INDEX channel_programs_ends_idx ON channel_programs(ends_at);`,
 }}
 
 // MigrationResult describes the schema change made by Migrate.

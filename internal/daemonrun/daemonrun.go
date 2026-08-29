@@ -15,6 +15,7 @@ import (
 
 	"github.com/gofrs/flock"
 
+	"github.com/five82/loom/internal/channels"
 	"github.com/five82/loom/internal/config"
 	"github.com/five82/loom/internal/httpapi"
 	"github.com/five82/loom/internal/library"
@@ -72,6 +73,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	scanner := library.NewScanner(catalog, library.NewFFProber(ffprobePath), metadataMatcher,
 		cfg.Library.MoviesDir, cfg.Library.ShortsDir, cfg.Library.TVDir, logger)
 	scans := library.NewManager(scanner, interval, logger)
+	lineup := channels.New(catalog)
+	// A scan is the only thing that changes what the channels can air, so the
+	// schedule is regenerated as soon as one finishes rather than waiting for
+	// the next tick.
+	scans.AfterScan(func(scanCtx context.Context) { updateChannels(scanCtx, lineup, logger) })
 	shutdownRequest := make(chan struct{}, 1)
 
 	_ = os.Remove(cfg.SocketPath())
@@ -91,7 +97,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("listen on LAN API %s: %w", cfg.API.Bind, err)
 	}
 	apiAddresses := tcpListenAddresses(tcpListener, cfg.API.Bind)
-	api := httpapi.New(catalog, scans, metadataService, shutdownRequest,
+	api := httpapi.New(catalog, scans, metadataService, lineup, shutdownRequest,
 		httpapi.ListenAddresses{
 			API: apiAddresses, Control: unixListener.Addr().String(),
 		})
@@ -115,7 +121,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var workers sync.WaitGroup
-	workers.Add(2)
+	workers.Add(3)
 	go func() {
 		defer workers.Done()
 		scans.Run(runCtx)
@@ -123,6 +129,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	go func() {
 		defer workers.Done()
 		runFeaturedPicks(runCtx, catalog, logger)
+	}()
+	go func() {
+		defer workers.Done()
+		runChannelSchedule(runCtx, lineup, logger)
 	}()
 
 	serveErrors := make(chan error, 2)
@@ -181,6 +191,41 @@ func runFeaturedPicks(ctx context.Context, catalog *store.Store, logger *slog.Lo
 		case <-timer.C:
 		}
 	}
+}
+
+// runChannelSchedule keeps Warp's lineup and its rolling schedule current. The
+// API regenerates on demand as a fallback, so a request racing startup still
+// sees a full schedule.
+func runChannelSchedule(ctx context.Context, lineup *channels.Generator, logger *slog.Logger) {
+	ticker := time.NewTicker(channelScheduleInterval)
+	defer ticker.Stop()
+	for {
+		updateChannels(ctx, lineup, logger)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// channelScheduleInterval is short relative to the 24 hour horizon, so a
+// program that airs while the daemon is busy never leaves a channel dark.
+const channelScheduleInterval = 15 * time.Minute
+
+func updateChannels(ctx context.Context, lineup *channels.Generator, logger *slog.Logger) {
+	if ctx.Err() != nil {
+		return
+	}
+	stats, err := lineup.Update(ctx, time.Now())
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			logger.Error("channel schedule update failed", "error", err)
+		}
+		return
+	}
+	logger.Info("channel schedule updated", "channels_created", stats.ChannelsCreated,
+		"programs_pruned", stats.ProgramsPruned, "programs_added", stats.ProgramsAdded)
 }
 
 func tcpListenAddresses(listener net.Listener, configuredBind string) []string {
