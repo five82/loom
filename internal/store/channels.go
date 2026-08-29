@@ -388,10 +388,12 @@ func (s *Store) ChannelLineup(ctx context.Context, from, to string) ([]Channel, 
 	if err != nil {
 		return nil, nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`,
+	// A channel hands episodes to the client outside their show hierarchy,
+	// so each carries its series title like search and Next Up do.
+	rows, err := s.db.QueryContext(ctx, `SELECT `+itemColumns+`, COALESCE(series.title, ''),
     p.id, p.channel_id, p.starts_at, p.ends_at, COALESCE(m.id, 0), COALESCE(m.path, '')
 FROM channel_programs p
-JOIN items i ON i.id = p.item_id
+JOIN items i ON i.id = p.item_id`+seriesJoin+`
 LEFT JOIN media_files m ON m.item_id = i.id
 WHERE p.ends_at > ? AND p.starts_at < ?
 ORDER BY p.channel_id, p.starts_at, p.id`, from, to)
@@ -402,11 +404,13 @@ ORDER BY p.channel_id, p.starts_at, p.id`, from, to)
 	var programs []ChannelProgram
 	for rows.Next() {
 		var program ChannelProgram
-		item, err := scanItemFields(rows, &program.ID, &program.ChannelID, &program.StartsAt,
+		var seriesTitle string
+		item, err := scanItemFields(rows, &seriesTitle, &program.ID, &program.ChannelID, &program.StartsAt,
 			&program.EndsAt, &program.MediaID, &program.MediaPath)
 		if err != nil {
 			return nil, nil, err
 		}
+		item.SeriesTitle = seriesTitle
 		program.Item = item
 		programs = append(programs, program)
 	}

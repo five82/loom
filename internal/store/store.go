@@ -757,8 +757,8 @@ type Item struct {
 	UnwatchedCount int `json:"unwatched_count,omitempty"`
 	// SeriesTitle names the show an episode belongs to, filled in only by the
 	// listings that hand episodes to a client outside their show hierarchy:
-	// search, Continue Watching, and Next Up. Empty everywhere else, and for
-	// everything that is not an episode.
+	// search, Continue Watching, Next Up, and the channel lineup. Empty
+	// everywhere else, and for everything that is not an episode.
 	SeriesTitle string `json:"series_title,omitempty"`
 }
 

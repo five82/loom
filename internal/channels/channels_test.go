@@ -436,6 +436,10 @@ func TestExtendRejoinsAfterAGap(t *testing.T) {
 		}
 	}
 	assertBackToBack(t, "show", programs, outage)
+	// An episode on a channel is listed outside its show, so it names the show.
+	if programs[0].Item.SeriesTitle != "Show" {
+		t.Fatalf("lineup episode series_title = %q, want %q", programs[0].Item.SeriesTitle, "Show")
+	}
 	// The run picks up after the last episode scheduled before the outage.
 	for index, id := range episodes {
 		if id == lastBefore && programs[0].Item.ID != episodes[(index+1)%len(episodes)] {
