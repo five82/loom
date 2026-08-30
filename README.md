@@ -6,7 +6,7 @@ clients; it never transcodes or remuxes them.
 
 Loom has clients for several platforms:
 
-- [Takeup](https://github.com/five82/takeup) for Android and Android TV
+- [Takeup](https://github.com/five82/takeup) for Android
 - [Takeup for Apple platforms](https://github.com/five82/takeup-ios) for iPad
   and Apple TV
 - [Warp](https://github.com/five82/warp), an Apple TV channels app
