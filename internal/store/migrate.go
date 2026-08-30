@@ -56,6 +56,20 @@ CREATE TABLE channel_cursors (
     item_id INTEGER NOT NULL,
     PRIMARY KEY (channel_id, source)
 );`,
+}, {
+	// The lineup grew from fourteen channels to twenty-seven and several of
+	// the originals left it. Channel numbers are never reused, so the kept
+	// channels would sit among holes with every new one after them. The
+	// channel tables hold only the numbers, a regenerable schedule, and the
+	// shuffle cursors, so they are emptied and the daemon rebuilds them in
+	// lineup order on its next start. No item, playback, or artwork row is
+	// touched.
+	from: 16,
+	to:   17,
+	sql: `
+DELETE FROM channel_programs;
+DELETE FROM channel_cursors;
+DELETE FROM channels;`,
 }}
 
 // MigrationResult describes the schema change made by Migrate.

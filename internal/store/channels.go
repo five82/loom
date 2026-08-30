@@ -192,27 +192,49 @@ ORDER BY i.id`, args...)
 	return result, nil
 }
 
-// ChannelMovies lists the airable movies from the movies library carrying any
-// of the genres, optionally limited to the given content ratings. The order is
-// by id; a genre pool is always shuffled.
-func (s *Store) ChannelMovies(ctx context.Context, genres, ratings []string) ([]ChannelItem, error) {
-	if len(genres) == 0 {
+// MovieFilter selects movies for a channel pool. Every set field narrows the
+// pool; an entirely empty filter selects nothing rather than everything.
+type MovieFilter struct {
+	Genres  []string // any of these genres
+	Ratings []string // any of these content ratings
+	Years   [2]int   // release years, inclusive
+	MinVote float64  // TMDB vote average at least this
+}
+
+func (f MovieFilter) empty() bool {
+	return len(f.Genres) == 0 && len(f.Ratings) == 0 && f.Years == [2]int{} && f.MinVote == 0
+}
+
+// ChannelMovies lists the airable movies from the movies library matching the
+// filter. The order is by id; a movie pool is always shuffled.
+func (s *Store) ChannelMovies(ctx context.Context, filter MovieFilter) ([]ChannelItem, error) {
+	if filter.empty() {
 		return nil, nil
 	}
+	var predicates []string
 	var args []any
-	genrePlaceholders := make([]string, len(genres))
-	for index, genre := range genres {
-		genrePlaceholders[index] = "?"
-		args = append(args, genre)
-	}
-	ratingPredicate := ""
-	if len(ratings) > 0 {
-		ratingPlaceholders := make([]string, len(ratings))
-		for index, rating := range ratings {
-			ratingPlaceholders[index] = "?"
-			args = append(args, rating)
+	in := func(values []string) string {
+		placeholders := make([]string, len(values))
+		for index, value := range values {
+			placeholders[index] = "?"
+			args = append(args, value)
 		}
-		ratingPredicate = ` AND i.content_rating IN (` + strings.Join(ratingPlaceholders, ",") + `)`
+		return strings.Join(placeholders, ",")
+	}
+	if len(filter.Genres) > 0 {
+		predicates = append(predicates, `EXISTS (SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
+        WHERE ig.item_id = i.id AND g.name IN (`+in(filter.Genres)+`))`)
+	}
+	if len(filter.Ratings) > 0 {
+		predicates = append(predicates, `i.content_rating IN (`+in(filter.Ratings)+`)`)
+	}
+	if filter.Years != [2]int{} {
+		predicates = append(predicates, `i.year BETWEEN ? AND ?`)
+		args = append(args, filter.Years[0], filter.Years[1])
+	}
+	if filter.MinVote > 0 {
+		predicates = append(predicates, `i.vote_average >= ?`)
+		args = append(args, filter.MinVote)
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT i.id, m.duration_ms
@@ -220,9 +242,7 @@ FROM items i
 JOIN media_files m ON m.item_id = i.id
 JOIN libraries l ON l.id = i.library_id
 WHERE `+channelEligibility+` AND i.kind = 'movie' AND l.kind = 'movies'
-    AND EXISTS (SELECT 1 FROM item_genres ig JOIN genres g ON g.id = ig.genre_id
-        WHERE ig.item_id = i.id AND g.name IN (`+strings.Join(genrePlaceholders, ",")+`))`+
-		ratingPredicate+`
+    AND `+strings.Join(predicates, "\n    AND ")+`
 ORDER BY i.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list channel movies: %w", err)

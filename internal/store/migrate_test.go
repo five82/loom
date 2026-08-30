@@ -279,3 +279,73 @@ PRAGMA user_version = 15;`); err != nil {
 	}
 	assertChannelTablesUsable(t, ctx, migrated, ids)
 }
+
+// Version 16 already has today's channel tables; 17 only empties them so the
+// rebuilt lineup is numbered in order, and everything else survives.
+func TestMigrate16To17EmptiesChannelTables(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "loom.db")
+	catalog, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := seedMixedCatalog(t, ctx, catalog)
+	if _, err := catalog.SetProgress(ctx, ids["showA-e1"], 300_000, 1_200_000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.UpsertImage(ctx, Image{
+		ItemID: ids["showA"], Kind: "poster", Path: "/state/poster.jpg", SourceURL: "https://example/poster.jpg",
+		Tag: "manual", ContentType: "image/jpeg", ManuallySelected: true, UpdatedAt: now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for number, key := range []string{"south-park", "south-park-shuffle", "classics"} {
+		channel, err := catalog.CreateChannel(ctx, key, key, "2026-08-29T20:00:00Z")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if channel.Number != number+1 {
+			t.Fatalf("channel %q took number %d", key, channel.Number)
+		}
+		if err := catalog.AppendChannelPrograms(ctx, channel.ID, []ScheduledProgram{{
+			ItemID: ids["showA-e1"], StartsAt: "2026-08-29T20:00:00Z", EndsAt: "2026-08-29T20:30:00Z",
+		}}, []ChannelCursor{{Source: "run", ItemID: ids["showA-e1"]}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := catalog.db.ExecContext(ctx, `PRAGMA user_version = 16`); err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Migrate(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.From != 16 || result.To != currentSchemaVersion || result.Created {
+		t.Fatalf("migration result = %+v", result)
+	}
+	migrated, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = migrated.Close() }()
+	var playbackRows, manualArtwork, itemRows int
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM playback_state`).Scan(&playbackRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM images WHERE manually_selected = 1`).Scan(&manualArtwork); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&itemRows); err != nil {
+		t.Fatal(err)
+	}
+	if playbackRows != 1 || manualArtwork != 1 || itemRows != 10 {
+		t.Fatalf("migrated rows = playback %d, manual artwork %d, items %d",
+			playbackRows, manualArtwork, itemRows)
+	}
+	// The channel tables are empty and numbering starts over at 1.
+	assertChannelTablesUsable(t, ctx, migrated, ids)
+}

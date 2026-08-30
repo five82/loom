@@ -4,26 +4,41 @@ import (
 	"fmt"
 
 	"github.com/five82/loom/internal/collections"
+	"github.com/five82/loom/internal/store"
 )
 
 // Source is a pool of programs and the order they air in. A source lists what
-// it draws on by TMDB id or genre, so it survives re-matches and title
-// corrections the way a collection does. Its playlist is every show's episodes
-// in turn (seasons in order, specials after the last season), then the titles
-// in the order given, then the genre movies, then the shorts library. An
-// in-order source walks that playlist and loops; a shuffled one deals it in a
-// fresh random order every cycle, so nothing repeats until everything has
-// aired.
+// it draws on by TMDB id, genre, release year, or rating, so it survives
+// re-matches and title corrections the way a collection does, and a title
+// added to the library joins the pools it fits at the next scan. Its playlist
+// is every show's episodes in turn (seasons in order, specials after the last
+// season), then the titles in the order given, then the movies matching the
+// filter, then the shorts library. An in-order source walks that playlist and
+// loops; a shuffled one deals it in a fresh random order every cycle, so
+// nothing repeats until everything has aired.
 type Source struct {
 	// Name identifies the source's cursor within its channel, so two blocks of
 	// the same show share one place in the run.
-	Name    string
-	Shows   []int64  // TMDB show ids
-	Titles  []int64  // TMDB movie ids, from the movies or shorts library
-	Genres  []string // movies carrying any of these genres
-	Ratings []string // restricts Genres to these content ratings
-	Shorts  bool     // the whole short films library
+	Name   string
+	Shows  []int64 // TMDB show ids
+	Titles []int64 // TMDB movie ids, from the movies or shorts library
+	// Genres, Years, and MinVote each narrow the movie pool; Ratings restricts
+	// it further to those content ratings. A source setting none of the first
+	// three draws no movies.
+	Genres  []string
+	Ratings []string
+	Years   [2]int // release years, inclusive
+	MinVote float64
+	Shorts  bool // the whole short films library
 	Shuffle bool
+}
+
+func (s *Source) hasMovies() bool {
+	return len(s.Genres) > 0 || s.Years != [2]int{} || s.MinVote > 0
+}
+
+func (s *Source) movies() store.MovieFilter {
+	return store.MovieFilter{Genres: s.Genres, Ratings: s.Ratings, Years: s.Years, MinVote: s.MinVote}
 }
 
 // Block is a daily window of a channel's grid. Times are minutes after local
@@ -106,18 +121,32 @@ func show(name string, tmdbIDs ...int64) *Source {
 	return &Source{Name: name, Shows: tmdbIDs}
 }
 
-func shuffledShow(name string, tmdbID int64) *Source {
-	return &Source{Name: name, Shows: []int64{tmdbID}, Shuffle: true}
+// mix deals episodes of several shows in one shuffle, the way a syndication
+// block does. Only episodic shows belong in one.
+func mix(name string, tmdbIDs ...int64) *Source {
+	return &Source{Name: name, Shows: tmdbIDs, Shuffle: true}
 }
 
 func movies(name string, genres ...string) *Source {
 	return &Source{Name: name, Genres: genres, Shuffle: true}
 }
 
+func decade(name string, first int) *Source {
+	return &Source{Name: name, Years: [2]int{first, first + 9}, Shuffle: true}
+}
+
 // marathon concatenates hand-picked collections in the order given, each in
-// release order, and walks them in turn across successive weekends.
+// release order, and walks them in turn. With no slugs it takes every
+// collection in display order, so a new shelf joins the Marathon channel on
+// its own.
 func marathon(slugs ...string) *Source {
 	source := &Source{Name: "marathon"}
+	if len(slugs) == 0 {
+		for _, collection := range collections.All {
+			source.Titles = append(source.Titles, collection.TMDBIDs...)
+		}
+		return source
+	}
 	for _, slug := range slugs {
 		found := false
 		for _, collection := range collections.All {
@@ -146,80 +175,87 @@ func on(days string, start, end int, source *Source) Block {
 	return Block{Days: days, Start: start, End: end, Source: source}
 }
 
-// Sources that appear in more than one block of their channel share one
+// A source that appears in more than one block of its channel shares one
 // cursor, so the run continues across the blocks.
-var (
-	batman         = show("batman", batman66)
-	dukes          = show("dukes", dukesOfHazz)
-	scienceFiction = movies("features", "Science Fiction")
-)
+var tng = show("tng", starTrekTNG)
 
 // Lineup is Loom's channel list, hand-built from the library the way the
 // collections are. Numbers come from the catalog: a channel takes the next
 // unused number the first time its key appears, so on a fresh catalog the
 // numbers follow this order and a channel added later takes the next one.
+//
+// A title may air on several channels; each channel keeps its own no-repeat
+// cycle. Episodic shows shuffle like syndicated reruns, while shows with
+// storylines, and Batman's two-part cliffhangers, run in order. A show gets a
+// channel of its own at roughly a day of material, about a hundred episodes;
+// shorter ones go into a block or a mix.
 var Lineup = []Channel{
-	{Key: "south-park", Name: "South Park", Blocks: allDay(show("run", southPark))},
-	{Key: "south-park-shuffle", Name: "South Park Shuffle", Blocks: allDay(shuffledShow("shuffle", southPark))},
-	{Key: "married-with-children", Name: "Married... with Children", Blocks: allDay(show("run", marriedWith))},
-	{Key: "mwc-shuffle", Name: "MWC Shuffle", Blocks: allDay(shuffledShow("shuffle", marriedWith))},
+	// Single shows.
+	{Key: "south-park", Name: "South Park", Blocks: allDay(mix("shuffle", southPark))},
+	{Key: "married-with-children", Name: "Married... with Children", Blocks: allDay(mix("shuffle", marriedWith))},
+	{Key: "the-office", Name: "The Office", Blocks: allDay(show("run", theOffice))},
+	{Key: "cheers", Name: "Cheers", Blocks: allDay(show("run", cheers))},
+	{Key: "simpsons", Name: "The Simpsons", Blocks: allDay(mix("shuffle", simpsons))},
+	{Key: "dukes", Name: "The Dukes of Hazzard", Blocks: allDay(mix("shuffle", dukesOfHazz))},
+	{Key: "batman", Name: "Batman '66", Blocks: allDay(show("run", batman66))},
+	{Key: "west-wing", Name: "The West Wing", Blocks: allDay(show("run", westWing))},
+	{Key: "boston-legal", Name: "Boston Legal", Blocks: allDay(show("run", bostonLegal))},
+	{Key: "jersey-shore", Name: "Jersey Shore", Blocks: allDay(show("run", jerseyShore))},
+
+	// Blocks and mixes.
 	{Key: "sitcoms", Name: "Sitcoms", Blocks: []Block{
 		daily(6*60, 14*60, show("cheers", cheers)),
 		daily(14*60, 23*60, show("office", theOffice)),
-		daily(23*60, 28*60, show("arrested", arrestedDev)),
-		daily(28*60, 30*60, show("studio60", studio60)),
+		daily(23*60, 30*60, show("arrested", arrestedDev)),
 	}},
+	{Key: "toons", Name: "Toons", Blocks: allDay(mix("mix", southPark, simpsons, robotChicken, beavis))},
 	{Key: "drama", Name: "Drama", Blocks: []Block{
 		daily(6*60, 11*60+30, show("boston-legal", bostonLegal)),
 		daily(11*60+30, 12*60+30, show("practice", thePractice)),
 		daily(12*60+30, 15*60+30, show("saul", betterCallSal)),
 		daily(15*60+30, 19*60+30, show("billions", billions)),
 		daily(19*60+30, 28*60, show("west-wing", westWing)),
-		daily(28*60, 30*60, show("cobra-kai", cobraKai)),
+		daily(28*60, 29*60, show("cobra-kai", cobraKai)),
+		daily(29*60, 30*60, show("studio60", studio60)),
 		// The short runs and the miniseries share a weekend afternoon.
 		on("weekend", 12*60, 16*60, show("feature", breakingBad, itMiniseries, anneOfGreen)),
 	}},
-	{Key: "classics", Name: "Classics", Blocks: []Block{
-		daily(6*60, 10*60, batman),
-		daily(10*60, 18*60, dukes),
-		daily(18*60, 21*60, batman),
-		daily(21*60, 30*60, dukes),
+	{Key: "crime", Name: "Crime", Blocks: []Block{
+		daily(6*60, 20*60, show("run", breakingBad, betterCallSal)),
+		daily(20*60, 30*60, movies("features", "Crime")),
 	}},
-	{Key: "slacker", Name: "Slacker", Blocks: []Block{
-		daily(6*60, 13*60, show("simpsons", simpsons)),
-		daily(13*60, 15*60, show("robot-chicken", robotChicken)),
-		daily(15*60, 16*60, show("beavis", beavis)),
-		daily(16*60, 30*60, show("jersey-shore", jerseyShore)),
+	{Key: "trek", Name: "Trek", Blocks: []Block{
+		daily(6*60, 20*60, tng),
+		// One film a night: the window is narrower than a film, so the second
+		// program after 20:00 is back in the series.
+		daily(20*60, 21*60, marathon("star-trek")),
+		daily(21*60, 30*60, tng),
 	}},
 	{Key: "nature-docs", Name: "Nature & Docs", Blocks: []Block{
 		daily(6*60, 21*60, show("nature", planetEarth, planetEarth2, bluePlanet2, ourPlanet, southPacific, yellowstone)),
 		daily(21*60, 30*60, &Source{Name: "stories", Shows: []int64{lastDance, neistat}, Titles: documentaries}),
 	}},
-	{Key: "cinema", Name: "Cinema", Blocks: []Block{
-		daily(gridStart, gridEnd, movies("features", "Drama", "Romance", "History", "War", "Mystery", "Western")),
-		on("sat", 12*60, gridEnd, marathon("tarantino", "the-godfather", "world-war-ii", "spaceflight")),
+
+	// Movies by genre.
+	{Key: "cinema", Name: "Cinema", Blocks: allDay(movies("features", "Drama", "History", "War", "Western"))},
+	{Key: "action", Name: "Action", Blocks: allDay(movies("features", "Action"))},
+	{Key: "suspense", Name: "Suspense", Blocks: allDay(movies("features", "Thriller", "Mystery", "Horror"))},
+	{Key: "comedy", Name: "Comedy", Blocks: allDay(movies("features", "Comedy"))},
+	{Key: "romance", Name: "Romance", Blocks: allDay(movies("features", "Romance"))},
+	{Key: "sci-fi", Name: "Sci-Fi", Blocks: allDay(movies("features", "Science Fiction"))},
+	{Key: "family", Name: "Family", Blocks: []Block{{Start: gridStart, End: gridEnd,
+		Source:       &Source{Name: "features", Genres: []string{"Family", "Animation"}, Ratings: []string{"G", "PG"}, Shuffle: true},
+		Interstitial: &Source{Name: "shorts", Shorts: true, Shuffle: true},
+	}}},
+
+	// Movies by era and pedigree.
+	{Key: "eighties", Name: "'80s", Blocks: []Block{
+		daily(6*60, 18*60, mix("reruns", marriedWith, dukesOfHazz)),
+		daily(18*60, 30*60, decade("features", 1980)),
 	}},
-	{Key: "action", Name: "Action", Blocks: []Block{
-		daily(gridStart, gridEnd, movies("features", "Action", "Thriller", "Crime")),
-		on("sat", 12*60, gridEnd, marathon("james-bond", "jason-bourne", "mission-impossible",
-			"indiana-jones", "x-men", "dark-knight", "kill-bill", "deadpool")),
-	}},
-	{Key: "comedy", Name: "Comedy", Blocks: []Block{
-		daily(gridStart, gridEnd, movies("features", "Comedy")),
-		on("sun", 12*60, gridEnd, marathon("pink-panther", "naked-gun", "vacation", "view-askew", "bill-and-ted")),
-	}},
-	{Key: "sci-fi", Name: "Sci-Fi", Blocks: []Block{
-		daily(6*60, 18*60, scienceFiction),
-		daily(18*60, 22*60, show("tng", starTrekTNG)),
-		daily(22*60, 30*60, scienceFiction),
-		on("sat", 12*60, gridEnd, marathon("star-wars", "star-trek", "blade-runner", "hunger-games")),
-	}},
-	{Key: "family", Name: "Family", Blocks: []Block{
-		{Start: gridStart, End: gridEnd,
-			Source:       &Source{Name: "features", Genres: []string{"Family", "Animation"}, Ratings: []string{"G", "PG"}, Shuffle: true},
-			Interstitial: &Source{Name: "shorts", Shorts: true, Shuffle: true}},
-		on("weekend", 12*60, 18*60, marathon("toy-story", "pixar", "disney-animation")),
-	}},
+	{Key: "nineties", Name: "'90s", Blocks: allDay(decade("features", 1990))},
+	{Key: "marathon", Name: "Marathon", Blocks: allDay(marathon())},
+	{Key: "top-shelf", Name: "Top Shelf", Blocks: allDay(&Source{Name: "features", MinVote: 7.5, Shuffle: true})},
 }
 
 // blockAt returns the block airing at the given local instant. Day-specific
@@ -298,7 +334,7 @@ func validate(lineup []Channel) error {
 				if source == nil {
 					continue
 				}
-				if source.Name == "" || len(source.Shows)+len(source.Titles)+len(source.Genres) == 0 && !source.Shorts {
+				if source.Name == "" || len(source.Shows)+len(source.Titles) == 0 && !source.hasMovies() && !source.Shorts {
 					return fmt.Errorf("channel %q: source %q is unnamed or empty", channel.Key, source.Name)
 				}
 				if held, ok := sources[source.Name]; ok && held != source {

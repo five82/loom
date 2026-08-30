@@ -66,7 +66,7 @@ func Backup(ctx context.Context, source, destination string) error {
 	return nil
 }
 
-const currentSchemaVersion = 16
+const currentSchemaVersion = 17
 
 func (s *Store) ensureSchema() error {
 	version, err := schemaVersion(s.db)

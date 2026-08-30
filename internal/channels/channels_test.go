@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/five82/loom/internal/collections"
 	"github.com/five82/loom/internal/store"
 )
 
@@ -65,6 +66,20 @@ func (c *catalog) addShort(title string, minutes int, tmdbID int64) int64 {
 
 func (c *catalog) addFilm(library, title string, minutes int, tmdbID int64, rating string, genres ...string) int64 {
 	c.t.Helper()
+	return c.addFilmFrom(library, title, minutes, tmdbID, rating, 0, 0, genres...)
+}
+
+// addReleasedMovie is addMovie with a release year and TMDB vote average, for
+// the era and pedigree pools.
+func (c *catalog) addReleasedMovie(title string, tmdbID int64, year int, vote float64, genres ...string) int64 {
+	c.t.Helper()
+	return c.addFilmFrom("movies", title, 60, tmdbID, "PG", year, vote, genres...)
+}
+
+func (c *catalog) addFilmFrom(
+	library, title string, minutes int, tmdbID int64, rating string, year int, vote float64, genres ...string,
+) int64 {
+	c.t.Helper()
 	c.nextSource++
 	id, err := c.store.UpsertItem(c.ctx, store.ItemInput{
 		LibraryID: c.libs[library], SourceKey: fmt.Sprintf("film-%d", c.nextSource), Kind: "movie",
@@ -79,7 +94,7 @@ func (c *catalog) addFilm(library, title string, minutes int, tmdbID int64, rati
 		genreList = append(genreList, store.Genre{ID: genreIDs[genre], Name: genre})
 	}
 	if err := c.store.UpdateMetadata(c.ctx, id, store.MetadataUpdate{
-		TMDBID: tmdbID, Title: title, Genres: genreList, ContentRating: rating,
+		TMDBID: tmdbID, Title: title, Genres: genreList, ContentRating: rating, Year: year, VoteAverage: vote,
 	}); err != nil {
 		c.t.Fatal(err)
 	}
@@ -234,7 +249,7 @@ func TestLineupIsValid(t *testing.T) {
 	if err := validate(Lineup); err != nil {
 		t.Fatal(err)
 	}
-	if len(Lineup) != 14 {
+	if len(Lineup) != 27 {
 		t.Fatalf("lineup has %d channels", len(Lineup))
 	}
 }
@@ -698,21 +713,30 @@ func TestInterstitialFollowsEveryFeature(t *testing.T) {
 	}
 }
 
-func TestSourcePoolsFilterByGenreRatingAndLibrary(t *testing.T) {
+func TestSourcePoolsFilterByGenreRatingYearVoteAndLibrary(t *testing.T) {
 	c := newCatalog(t)
 	c.addMovie("Kids", 60, 1, "G", "Family")
 	c.addMovie("Teens", 60, 2, "PG-13", "Family")
 	c.addMovie("Space", 60, 3, "PG", "Science Fiction")
 	c.addShort("Tiny", 5, 4)
+	c.addReleasedMovie("Eighties", 5, 1985, 6.5, "Comedy")
+	c.addReleasedMovie("Nineties", 6, 1990, 8.1, "Comedy")
+	c.addReleasedMovie("Beloved Eighties Drama", 7, 1989, 8.0, "Drama")
 	lineup := []Channel{
 		{Key: "family", Name: "Family", Blocks: allDay(&Source{
 			Name: "features", Genres: []string{"Family"}, Ratings: []string{"G", "PG"}, Shuffle: true})},
 		{Key: "sci-fi", Name: "Sci-Fi", Blocks: allDay(movies("features", "Science Fiction"))},
+		{Key: "eighties-comedy", Name: "'80s Comedy", Blocks: allDay(&Source{
+			Name: "features", Genres: []string{"Comedy"}, Years: [2]int{1980, 1989}, Shuffle: true})},
+		{Key: "nineties", Name: "'90s", Blocks: allDay(decade("features", 1990))},
+		{Key: "top-shelf", Name: "Top Shelf", Blocks: allDay(&Source{Name: "features", MinVote: 8.1, Shuffle: true})},
 	}
 	if _, err := c.generator(lineup...).Update(c.ctx, testNow); err != nil {
 		t.Fatal(err)
 	}
-	for key, want := range map[string]string{"family": "Kids", "sci-fi": "Space"} {
+	for key, want := range map[string]string{
+		"family": "Kids", "sci-fi": "Space", "eighties-comedy": "Eighties", "nineties": "Nineties", "top-shelf": "Nineties",
+	} {
 		aired := c.aired(key)
 		if len(aired) == 0 {
 			t.Fatalf("channel %q aired nothing", key)
@@ -809,5 +833,62 @@ func TestNewItemsJoinTheCycleOnTheNextExtend(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("a movie added after the first schedule never aired")
+	}
+}
+
+func TestMarathonWithoutSlugsTakesEveryCollection(t *testing.T) {
+	everything := marathon()
+	var want []int64
+	for _, collection := range collections.All {
+		want = append(want, collection.TMDBIDs...)
+	}
+	if len(want) == 0 || len(everything.Titles) != len(want) {
+		t.Fatalf("marathon() lists %d titles, want %d", len(everything.Titles), len(want))
+	}
+	for index, id := range want {
+		if everything.Titles[index] != id {
+			t.Fatalf("marathon() title %d = %d, want %d", index, everything.Titles[index], id)
+		}
+	}
+	if one := marathon("star-trek"); len(one.Titles) == 0 || len(one.Titles) >= len(want) {
+		t.Fatalf("marathon(star-trek) lists %d titles", len(one.Titles))
+	}
+}
+
+// Trek airs one film a night: a block narrower than a film admits a single
+// program and then hands back to the series, which needs the soft boundary
+// to work in both directions.
+func TestBlockNarrowerThanItsProgramsAirsOneAndReturns(t *testing.T) {
+	c := newCatalog(t)
+	specs := make([]episode, 0, 40)
+	for index := range 40 {
+		specs = append(specs, episode{season: 1, number: index + 1, minutes: 45})
+	}
+	c.addShow("Series", 1, specs...)
+	c.addMovie("Film A", 120, 11, "PG", "Science Fiction")
+	c.addMovie("Film B", 120, 12, "PG", "Science Fiction")
+	series := show("series", 1)
+	generator := c.generator(Channel{Key: "trek", Name: "Trek", Blocks: []Block{
+		daily(6*60, 20*60, series),
+		daily(20*60, 21*60, &Source{Name: "films", Titles: []int64{11, 12}}),
+		daily(21*60, 30*60, series),
+	}})
+	// Start in the morning so the joined program is an episode and the
+	// horizon covers one whole evening.
+	if _, err := generator.Update(c.ctx, testNow.Add(-12*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	films := 0
+	aired := c.aired("trek")
+	for index, title := range aired {
+		if title != "Series" {
+			films++
+			if index > 0 && aired[index-1] != "Series" {
+				t.Fatalf("two films back to back: %v", aired)
+			}
+		}
+	}
+	if films != 1 {
+		t.Fatalf("aired %d films in a day: %v", films, aired)
 	}
 }

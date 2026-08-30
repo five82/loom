@@ -458,8 +458,8 @@ func (c *poolCache) load(source *Source) (*pool, error) {
 		}
 		items = append(items, titles...)
 	}
-	if len(source.Genres) > 0 {
-		movies, err := c.catalog.ChannelMovies(c.ctx, source.Genres, source.Ratings)
+	if source.hasMovies() {
+		movies, err := c.catalog.ChannelMovies(c.ctx, source.movies())
 		if err != nil {
 			return nil, err
 		}

@@ -432,21 +432,26 @@ movie has been removed from the library.
 The channels endpoint returns Loom's linear TV lineup: every channel, in
 ascending channel number, with the programs scheduled around now. The lineup is
 a hand-built table in `internal/channels/lineup.go`, like the collections,
-naming shows and films by TMDB id and movies by genre. It is meant to feel like
-a cable box that has been running for years: fourteen channels, each with a
-daily grid of blocks in the server's local time, a broadcast day that runs from
-06:00 to 06:00, and weekend blocks that override the grid. Single-show
-channels run South Park and Married... with Children in order, and again
-shuffled; block channels rotate through sitcoms, dramas, classics, cartoons and
-reality, and nature and documentary series; movie channels draw on genre pools
-for drama, action, comedy, science fiction, and family films, with a Pixar
-short after every Family feature, Star Trek: The Next Generation each evening
-on Sci-Fi, and franchise marathons from the collections on weekends. A channel
-takes the next unused number the first time its key appears and keeps it;
-numbers are never reused, and a channel dropped from the lineup is removed
-without renumbering the rest. Only available movies and episodes with a probed
-runtime are scheduled, and a channel whose shows are not in the library stays
-dark rather than disappearing.
+naming shows and films by TMDB id and movies by genre, release year, or TMDB
+rating. It is meant to feel like a cable box that has been running for years:
+twenty-seven channels, each with a daily grid of blocks in the server's local
+time, a broadcast day that runs from 06:00 to 06:00, and weekend blocks that
+override the grid. A title may air on several channels, and each channel keeps
+its own no-repeat cycle. Ten channels carry a single show: episodic ones like
+South Park, Married... with Children, The Simpsons and The Dukes of Hazzard
+shuffle like syndicated reruns, while shows with storylines, and Batman '66
+with its two-part cliffhangers, run in order. Block channels rotate through
+sitcoms, dramas, and nature and documentary series, or mix cartoons in one
+shuffle; Crime runs Breaking Bad and Better Call Saul by day and crime films by
+night, and Trek runs The Next Generation with a Star Trek film each evening.
+Movie channels draw on genre pools for drama, action, suspense, comedy,
+romance, science fiction, and family films (with a Pixar short after every
+Family feature), on the 1980s and 1990s, on films rated 7.5 or better, and, on
+Marathon, on every collection back to back. A channel takes the next unused
+number the first time its key appears and keeps it; numbers are never reused,
+and a channel dropped from the lineup is removed without renumbering the rest.
+Only available movies and episodes with a probed runtime are scheduled, and a
+channel whose shows are not in the library stays dark rather than disappearing.
 
 Programs run back to back at their real runtime, with no slot alignment, and
 every channel is kept 24 hours ahead. Block boundaries are soft: a program that
