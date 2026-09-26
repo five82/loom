@@ -138,7 +138,8 @@ func TestCanceledBackgroundWork(t *testing.T) {
 	cancel()
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 	runFeaturedPicks(ctx, catalog, logger)
-	updateChannels(ctx, nil, logger) // Cancellation must avoid touching the lineup.
+	updateChannels(ctx, nil, logger)     // Cancellation must avoid touching the lineup.
+	runChannelSchedule(ctx, nil, logger) // A canceled schedule must exit without touching the lineup.
 }
 
 func TestDiscoveryRequiresLANAddress(t *testing.T) {

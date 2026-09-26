@@ -47,6 +47,19 @@ func TestInstallAndUninstallFailures(t *testing.T) {
 			t.Fatalf("second install: %v", err)
 		}
 	})
+	t.Run("config directory is a file", func(t *testing.T) {
+		log := installFakeSystemctl(t, "")
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if err := os.WriteFile(configDir, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Install(context.Background(), "/opt/loom", "/home/config.toml", "/usr/bin/ffprobe"); err == nil || !strings.Contains(err.Error(), "create systemd user directory") {
+			t.Fatalf("install with blocked config directory = %v", err)
+		}
+		if _, err := os.Stat(log); !os.IsNotExist(err) {
+			t.Fatalf("systemctl invoked: %v", err)
+		}
+	})
 	t.Run("invalid executable", func(t *testing.T) {
 		log := installFakeSystemctl(t, "")
 		if _, err := Install(context.Background(), "", "/home/config.toml", "/usr/bin/ffprobe"); err == nil || !strings.Contains(err.Error(), "executable path is empty") {

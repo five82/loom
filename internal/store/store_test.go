@@ -620,7 +620,7 @@ func TestSearchSortsPastLeadingArticles(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := catalog.UpdateMetadata(ctx, itemID, MetadataUpdate{
-			TMDBID: int64(1000 + index),
+			TMDBID:  int64(1000 + index),
 			Credits: []Credit{{PersonID: 1032, Name: "Martin Scorsese", Role: "director"}},
 		}); err != nil {
 			t.Fatal(err)
@@ -1270,6 +1270,20 @@ func TestNextUp(t *testing.T) {
 		if item.ID == special {
 			t.Fatalf("next up offered a special: %+v", items)
 		}
+	}
+	if limited, err := catalog.NextUp(ctx, 1); err != nil || len(limited) != 1 {
+		t.Fatalf("limited next up = %+v, %v", limited, err)
+	}
+	for _, limit := range []int{0, 101} {
+		if defaulted, err := catalog.NextUp(ctx, limit); err != nil || len(defaulted) != len(items) {
+			t.Fatalf("next up with limit %d = %+v, %v", limit, defaulted, err)
+		}
+	}
+	if _, err := catalog.db.ExecContext(ctx, `UPDATE items SET year = 'invalid' WHERE id = ?`, officeE2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.NextUp(ctx, 20); err == nil {
+		t.Fatal("next up accepted an invalid episode row")
 	}
 }
 
