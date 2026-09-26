@@ -163,6 +163,96 @@ func TestJSONRequests(t *testing.T) {
 	}
 }
 
+func TestControlClientRejectsBadPathsAndMissingSockets(t *testing.T) {
+	dir := t.TempDir()
+	if IsRunning(dir, filepath.Join(dir, "missing.sock")) {
+		t.Fatal("directory cannot be a daemon lock")
+	}
+	if _, err := do(filepath.Join(dir, "missing.sock"), http.MethodGet, "/bad\npath", nil); err == nil {
+		t.Fatal("invalid HTTP request path accepted")
+	}
+	if _, err := PostJSON(filepath.Join(dir, "missing.sock"), "/", nil, nil); err == nil {
+		t.Fatal("missing socket accepted")
+	}
+}
+
+func TestStartAlreadyRunningAndInvalidLog(t *testing.T) {
+	lock, socket := testDaemon(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	if err := Start(StartOptions{LockPath: lock, SocketPath: socket}); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("Start on running daemon = %v", err)
+	}
+	dir := t.TempDir()
+	if err := Start(StartOptions{LockPath: filepath.Join(dir, "lock"), SocketPath: filepath.Join(dir, "socket"), LogPath: dir}); err == nil || !strings.Contains(err.Error(), "open daemon console log") {
+		t.Fatalf("Start with directory as log = %v", err)
+	}
+}
+
+func TestMain(m *testing.M) {
+	if os.Getenv("LOOM_TEST_DAEMON_CHILD") == "1" {
+		os.Exit(23)
+	}
+	if os.Getenv("LOOM_TEST_DAEMON_CHILD") == "ready" {
+		lock := flock.New(os.Getenv("LOOM_TEST_CHILD_LOCK"))
+		if err := lock.Lock(); err != nil {
+			os.Exit(2)
+		}
+		listener, err := net.Listen("unix", os.Getenv("LOOM_TEST_CHILD_SOCKET"))
+		if err != nil {
+			os.Exit(3)
+		}
+		stopped := make(chan struct{})
+		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/_loom/stop" {
+				w.WriteHeader(http.StatusAccepted)
+				close(stopped)
+			}
+		})}
+		go func() { _ = server.Serve(listener) }()
+		<-stopped
+		_ = server.Close()
+		_ = lock.Unlock()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func TestStartWaitsForReadyDaemon(t *testing.T) {
+	dir := t.TempDir()
+	lock := filepath.Join(dir, "lock")
+	socket := filepath.Join(dir, "socket")
+	t.Setenv("LOOM_TEST_DAEMON_CHILD", "ready")
+	t.Setenv("LOOM_TEST_CHILD_LOCK", lock)
+	t.Setenv("LOOM_TEST_CHILD_SOCKET", socket)
+	t.Cleanup(func() {
+		if IsRunning(lock, socket) {
+			_ = Stop(lock, socket)
+		}
+	})
+	if err := Start(StartOptions{LockPath: lock, SocketPath: socket, LogPath: filepath.Join(dir, "console.log")}); err != nil {
+		t.Fatal(err)
+	}
+	if !IsRunning(lock, socket) {
+		t.Fatal("child daemon was not ready")
+	}
+	if err := Stop(lock, socket); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartChildExitsDuringStartup(t *testing.T) {
+	dir := t.TempDir()
+	// The test executable exits via TestMain when launched as the daemon.
+	t.Setenv("LOOM_TEST_DAEMON_CHILD", "1")
+	err := Start(StartOptions{LockPath: filepath.Join(dir, "lock"), SocketPath: filepath.Join(dir, "socket"), LogPath: filepath.Join(dir, "console.log"), ConfigPath: filepath.Join(dir, "config.toml")})
+	if err == nil || !strings.Contains(err.Error(), "exited during startup") {
+		t.Fatalf("Start = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "console.log"))
+	if err != nil || len(data) != 0 {
+		t.Fatalf("child log = %q, %v", data, err)
+	}
+}
+
 func TestStartLogDirectoryError(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "file")

@@ -24,6 +24,8 @@ func TestCatalogFailuresReturnServerErrors(t *testing.T) {
 		local              bool
 	}{
 		{"GET", "/api/v1/libraries", "", false},
+		{"GET", "/api/v1/home", "", false},
+		{"GET", "/api/v1/channels", "", false},
 		{"GET", "/api/v1/genres", "", false},
 		{"GET", "/api/v1/collections", "", false},
 		{"GET", "/api/v1/featured-pick", "", false},

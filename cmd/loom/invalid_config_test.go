@@ -17,7 +17,7 @@ func TestCLICommandsReportInvalidConfig(t *testing.T) {
 	for _, args := range [][]string{
 		{"start"}, {"stop"}, {"restart"}, {"status"}, {"scan"}, {"unmatched"},
 		{"search", "movie", "title"}, {"match", "1", "2"}, {"backup"}, {"migrate"},
-		{"config", "validate"}, {"developer", "audit"}, {"developer", "reset"}, {"logs"},
+		{"config", "validate"}, {"developer", "audit"}, {"developer", "reset"}, {"logs"}, {"daemon"},
 	} {
 		_, err := runCLI(t, cfg, args...)
 		if err == nil || !strings.Contains(err.Error(), "parse config") {
