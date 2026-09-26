@@ -1,9 +1,17 @@
 package daemonrun
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
 	"net"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/five82/loom/internal/store"
 )
 
 type testAddress string
@@ -57,6 +65,80 @@ func TestDiscoveryService(t *testing.T) {
 	if got, want := service.IPs, []net.IP{net.ParseIP("192.168.1.20"), net.ParseIP("fd00::20")}; !slices.EqualFunc(got, want, net.IP.Equal) {
 		t.Fatalf("IPs = %v, want %v", got, want)
 	}
+}
+
+func TestMultiHandlerFansOutAndPreservesAttributes(t *testing.T) {
+	var left, right bytes.Buffer
+	ctx := context.Background()
+	h := newMultiHandler(
+		slog.NewTextHandler(&left, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		slog.NewTextHandler(&right, &slog.HandlerOptions{Level: slog.LevelInfo}),
+	)
+	if h.Enabled(ctx, slog.LevelDebug) || !h.Enabled(ctx, slog.LevelInfo) {
+		t.Fatal("unexpected combined log levels")
+	}
+	logger := slog.New(h.WithAttrs([]slog.Attr{slog.String("component", "daemon")}).WithGroup("status"))
+	logger.InfoContext(ctx, "started", "port", 8097)
+	if !strings.Contains(left.String(), "component=daemon") || !strings.Contains(left.String(), "status.port=8097") || !strings.Contains(right.String(), "status.port=8097") {
+		t.Fatalf("info outputs: left=%q right=%q", left.String(), right.String())
+	}
+	logger.WarnContext(ctx, "stopping")
+	if !strings.Contains(left.String(), "stopping") || !strings.Contains(right.String(), "stopping") {
+		t.Fatalf("warn outputs: left=%q right=%q", left.String(), right.String())
+	}
+}
+
+// A handler error must be returned to slog rather than silently swallowed.
+type failingHandler struct{ slog.Handler }
+
+func (f failingHandler) Handle(context.Context, slog.Record) error { return errors.New("write failed") }
+
+func TestMultiHandlerReturnsFirstError(t *testing.T) {
+	var output bytes.Buffer
+	h := newMultiHandler(failingHandler{slog.NewTextHandler(&output, nil)}, slog.NewTextHandler(&output, nil))
+	if err := h.Handle(context.Background(), slog.Record{}); err == nil || err.Error() != "write failed" {
+		t.Fatalf("Handle error = %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("second handler ran: %q", output.String())
+	}
+}
+
+func TestTCPListenAddressesUsesBoundPort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	got := tcpListenAddresses(listener, "127.0.0.1:0")
+	if !slices.Equal(got, []string{listener.Addr().String()}) {
+		t.Fatalf("addresses = %v", got)
+	}
+	for _, tc := range []struct {
+		bound, bind string
+		addresses   []net.Addr
+	}{
+		{"127.0.0.1:8097", "bad bind", nil},
+		{"bad bound", "0.0.0.0:8097", nil},
+		{"0.0.0.0:8097", "0.0.0.0:8097", []net.Addr{testAddress("bad cidr"), testAddress("::1/128")}},
+	} {
+		if got := expandTCPListenAddress(tc.bound, tc.bind, tc.addresses); !slices.Equal(got, []string{tc.bound}) {
+			t.Fatalf("expand %q, %q = %v", tc.bound, tc.bind, got)
+		}
+	}
+}
+
+func TestCanceledBackgroundWork(t *testing.T) {
+	catalog, err := store.Open(filepath.Join(t.TempDir(), "loom.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = catalog.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	runFeaturedPicks(ctx, catalog, logger)
+	updateChannels(ctx, nil, logger) // Cancellation must avoid touching the lineup.
 }
 
 func TestDiscoveryRequiresLANAddress(t *testing.T) {

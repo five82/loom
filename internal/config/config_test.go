@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,6 +153,48 @@ func TestResetStatePreservesConfigInsideStateDirectory(t *testing.T) {
 	} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("state path %q still exists or stat failed: %v", path, err)
+		}
+	}
+}
+
+func TestWriteSampleDoesNotReplaceExistingConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "config.toml")
+	written, err := WriteSample(path)
+	if err != nil || written != path {
+		t.Fatalf("WriteSample = %q, %v", written, err)
+	}
+	cfg, err := Load(path)
+	if err != nil || cfg.Name != "Loom" {
+		t.Fatalf("load sample = %+v, %v", cfg, err)
+	}
+	if _, err := WriteSample(path); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second WriteSample error = %v, want already exists", err)
+	}
+	assertTestFile(t, path, sampleConfig)
+}
+
+func TestStatePathsAndRuntimeDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(root, "run"))
+	cfg := defaultConfig()
+	cfg.Paths.StateDir = filepath.Join(root, "state")
+	if err := cfg.EnsureStateDir(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{cfg.Paths.StateDir, cfg.ImageDir()} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("state directory %q: %v", path, err)
+		}
+	}
+	for _, tc := range []struct{ got, want string }{
+		{cfg.DBPath(), filepath.Join(cfg.Paths.StateDir, "loom.db")},
+		{cfg.DaemonLogPath(), filepath.Join(cfg.Paths.StateDir, "daemon.log")},
+		{cfg.DaemonConsoleLogPath(), filepath.Join(cfg.Paths.StateDir, "daemon-console.log")},
+		{cfg.SocketPath(), filepath.Join(root, "run", "loom.sock")},
+		{cfg.LockPath(), filepath.Join(root, "run", "loom.lock")},
+	} {
+		if tc.got != tc.want {
+			t.Fatalf("path = %q, want %q", tc.got, tc.want)
 		}
 	}
 }
