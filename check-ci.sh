@@ -8,6 +8,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+GOLANGCI_VERSION=v2.14.0
+GOVULNCHECK_VERSION=v1.7.0
 
 print_step() {
     echo -e "\n${BLUE}:: $1${NC}"
@@ -43,9 +45,10 @@ if version_lt "$GO_VERSION" "$MIN_GO_VERSION"; then
     exit 1
 fi
 
-print_step "Updating golangci-lint to latest"
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-GOLANGCI_VERSION=$(golangci-lint version --format short 2>/dev/null || golangci-lint version 2>/dev/null | head -n1 | sed 's/.*version //; s/ .*//')
+print_step "Checking golangci-lint $GOLANGCI_VERSION"
+if ! command -v golangci-lint &>/dev/null || [ "$(golangci-lint version --short 2>/dev/null)" != "${GOLANGCI_VERSION#v}" ]; then
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_VERSION
+fi
 print_success "Go $GO_VERSION, golangci-lint $GOLANGCI_VERSION"
 
 print_step "Verifying go.mod is tidy"
@@ -102,9 +105,9 @@ else
 fi
 
 print_step "Running govulncheck"
-if ! command -v govulncheck &>/dev/null; then
-    echo "   Installing govulncheck..."
-    go install golang.org/x/vuln/cmd/govulncheck@latest
+if ! command -v govulncheck &>/dev/null || ! govulncheck -version 2>&1 | grep -Fq "Scanner: govulncheck@$GOVULNCHECK_VERSION"; then
+    echo "   Installing govulncheck $GOVULNCHECK_VERSION..."
+    go install golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION
 fi
 if govulncheck ./...; then
     print_success "No vulnerabilities found"
